@@ -249,4 +249,4 @@ Contributions welcome! Please read our [Contributing Guide](CONTRIBUTING.md) fir
 
 ---
 
-Made with ❤️ by [ArmorClaw](https://armoriq.ai)
+Made with ❤️ by [ArmorIQ](https://armoriq.ai)
