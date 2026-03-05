@@ -15,33 +15,29 @@ Intent-based security enforcement for OpenClaw AI agents. Protect your AI assist
 
 ### Prerequisites
 
-- OpenClaw >= 2026.2.0 (with ArmorClaw patches applied)
-- ArmorIQ account (get your API key at [armoriq.ai](https://armoriq.ai))
+- Node.js v22+, pnpm, Git
+- ArmorIQ API key from [platform.armoriq.ai](https://platform.armoriq.ai)
+- OpenAI, Gemini, or OpenRouter API key
 
-### Quick Setup
+### One-Command Install (Recommended)
 
-1. **Install and patch OpenClaw:**
+The ArmorClaw installer handles everything — clones OpenClaw, applies security patches, installs the plugin from npm, and writes your config:
 
 ```bash
-# Clone OpenClaw
-git clone --branch v2026.2.12 --depth 1 https://github.com/openclaw/openclaw.git
-cd openclaw
-
-# Apply ArmorClaw security patches
-curl -fsSL https://armoriq.ai/armoriq_openclaw_patch.sh | bash
-
-# Build and install
-pnpm install && pnpm build
-pnpm link --global
+curl -fsSL https://armoriq.ai/install-armorclaw.sh | bash
 ```
 
-2. **Install ArmorClaw plugin:**
+See the [Quick Start Guide](https://docs.armoriq.ai/docs/installation/quickstart) for full details on the interactive prompts.
+
+### Manual Install
+
+If you already have OpenClaw installed with ArmorClaw patches applied:
 
 ```bash
 openclaw plugins install @armoriq/armorclaw
 ```
 
-3. **Verify:**
+### Verify
 
 ```bash
 openclaw plugins list
@@ -50,18 +46,29 @@ openclaw plugins list
 
 ## Configuration
 
-Add to your `~/.openclaw/openclaw.json`:
+The installer writes this automatically. To review or edit, update `~/.openclaw/openclaw.json`:
 
 ```json
 {
   "plugins": {
+    "enabled": true,
+    "allow": ["armorclaw"],
     "entries": {
       "armorclaw": {
         "enabled": true,
-        "apiKey": "ak_live_xxx",
-        "userId": "user-123",
-        "agentId": "agent-456",
-        "contextId": "default"
+        "config": {
+          "enabled": true,
+          "policyUpdateEnabled": true,
+          "policyUpdateAllowList": ["*"],
+          "userId": "your-user-id",
+          "agentId": "openclaw-agent-001",
+          "contextId": "default",
+          "policyStorePath": "~/.openclaw/armoriq.policy.json",
+          "iapEndpoint": "https://customer-iap.armoriq.ai",
+          "proxyEndpoint": "https://customer-proxy.armoriq.ai",
+          "backendEndpoint": "https://customer-api.armoriq.ai",
+          "apiKey": "ak_live_xxx"
+        }
       }
     }
   }
@@ -70,28 +77,32 @@ Add to your `~/.openclaw/openclaw.json`:
 
 ### Configuration Options
 
+All options live under `plugins.entries.armorclaw.config`:
+
 | Option | Required | Description |
 |--------|----------|-------------|
 | `enabled` | Yes | Enable/disable the plugin |
 | `apiKey` | Yes | Your ArmorIQ API key |
 | `userId` | Yes | User identifier |
 | `agentId` | Yes | Agent identifier |
-| `contextId` | No | Context identifier (default: "default") |
+| `contextId` | No | Context identifier (default: `"default"`) |
 | `validitySeconds` | No | Intent token validity period (default: 60) |
+| `policyUpdateEnabled` | No | Allow policy updates via chat |
+| `policyUpdateAllowList` | No | User IDs permitted to manage policies |
 | `policy` | No | Local policy rules (allow/deny) |
 | `policyStorePath` | No | Path to policy store file |
-| `iapEndpoint` | No | ArmorIQ IAP backend URL |
-| `proxyEndpoint` | No | ArmorIQ proxy endpoint URL |
-| `backendEndpoint` | No | ArmorIQ backend API URL |
+| `iapEndpoint` | No | ArmorIQ IAP endpoint (default: `https://customer-iap.armoriq.ai`) |
+| `proxyEndpoint` | No | ArmorIQ proxy endpoint (default: `https://customer-proxy.armoriq.ai`) |
+| `backendEndpoint` | No | ArmorIQ backend API (default: `https://customer-api.armoriq.ai`) |
 
 ### Quick Start with CLI
 
 ```bash
 # Set configuration via CLI
 openclaw config set plugins.entries.armorclaw.enabled true
-openclaw config set plugins.entries.armorclaw.apiKey "ak_live_xxx"
-openclaw config set plugins.entries.armorclaw.userId "user-123"
-openclaw config set plugins.entries.armorclaw.agentId "agent-456"
+openclaw config set plugins.entries.armorclaw.config.apiKey "ak_live_xxx"
+openclaw config set plugins.entries.armorclaw.config.userId "your-user-id"
+openclaw config set plugins.entries.armorclaw.config.agentId "openclaw-agent-001"
 
 # Restart gateway
 openclaw gateway restart
@@ -149,9 +160,11 @@ Define local policies for additional control:
   "plugins": {
     "entries": {
       "armorclaw": {
-        "policy": {
-          "allow": ["web_search", "web_fetch", "read", "write"],
-          "deny": ["bash", "exec"]
+        "config": {
+          "policy": {
+            "allow": ["web_search", "web_fetch", "read", "write"],
+            "deny": ["bash", "exec"]
+          }
         }
       }
     }
