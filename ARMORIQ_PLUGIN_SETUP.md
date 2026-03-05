@@ -164,9 +164,9 @@ pnpm dev gateway
 | Variable | Used By | Default | Purpose |
 |----------|---------|---------|---------|
 | `ARMORIQ_API_KEY` | Plugin config | none | API key for ArmorIQ services |
-| `IAP_BACKEND_URL` | `iap-verification.service.ts` | `http://localhost:3000` | IAP backend for intent tokens |
+| `IAP_BACKEND_URL` | `iap-verification.service.ts` | `https://customer-api.armoriq.ai` | IAP backend for intent tokens |
 | `CONMAP_AUTO_URL` | `iap-verification.service.ts` | (fallback for IAP) | Alternative IAP URL |
-| `CSRG_URL` | `crypto-policy.service.ts`, `iap-verification.service.ts` | `http://localhost:8000` | CSRG cryptographic verification |
+| `CSRG_URL` | `crypto-policy.service.ts`, `iap-verification.service.ts` | `https://customer-iap.armoriq.ai` | CSRG cryptographic verification |
 | `IAP_ENDPOINT` | Plugin config (`index.ts`) | none | IAP endpoint (plugin-level) |
 | `PROXY_ENDPOINT` | Plugin config (`index.ts`) | none | Proxy endpoint |
 | `BACKEND_ENDPOINT` | Plugin config (`index.ts`) | none | Backend endpoint |

@@ -1,7 +1,7 @@
 {
-  "name": "@armoriq/armoriq",
+  "name": "@armoriq/armorclaw",
   "version": "0.0.1",
-  "description": "ArmorIQ intent enforcement and security plugin for OpenClaw AI agents",
+  "description": "ArmorClaw intent enforcement and security plugin for OpenClaw AI agents",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -43,6 +43,7 @@
   "keywords": [
     "openclaw",
     "openclaw-plugin",
+    "armorclaw",
     "armoriq",
     "security",
     "intent-verification",
@@ -53,12 +54,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/armoriq/armoriq-openclaw-plugin.git"
+    "url": "https://github.com/armoriq/armorclaw.git"
   },
   "bugs": {
-    "url": "https://github.com/armoriq/armoriq-openclaw-plugin/issues"
+    "url": "https://github.com/armoriq/armorclaw/issues"
   },
-  "homepage": "https://github.com/armoriq/armoriq-openclaw-plugin#readme",
-  "author": "ArmorIQ <support@armoriq.ai>",
+  "homepage": "https://github.com/armoriq/armorclaw#readme",
+  "author": "ArmorClaw <license@armoriq.io>",
   "license": "MIT"
 }

@@ -1,6 +1,6 @@
 {
-  "id": "armoriq",
-  "name": "ArmorIQ",
+  "id": "armorclaw",
+  "name": "ArmorClaw",
   "description": "Intent enforcement and audit integration via ArmorIQ",
   "configSchema": {
     "type": "object",
@@ -44,7 +44,7 @@
       "maxParamKeys": { "type": "number" },
       "maxParamItems": { "type": "number" },
       "cryptoPolicyEnabled": { "type": "boolean", "default": false },
-      "csrgEndpoint": { "type": "string", "default": "http://localhost:8000" }
+      "csrgEndpoint": { "type": "string", "default": "https://customer-iap.armoriq.ai" }
     }
   }
 }

@@ -87,7 +87,7 @@ type JsonResponse<T> = {
   text: string;
 };
 
-const DEFAULT_CSRG_URL = "http://localhost:8000";
+const DEFAULT_CSRG_URL = "https://customer-iap.armoriq.ai";
 
 function createLogger(logger?: LoggerLike): Required<LoggerLike> {
   const fallback = logger ?? {};

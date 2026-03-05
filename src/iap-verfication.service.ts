@@ -93,7 +93,7 @@ type JsonResponse<T> = {
 };
 
 // Production: https://customer-iap.armoriq.ai
-const DEFAULT_CSRG_URL = "http://localhost:8000";
+const DEFAULT_CSRG_URL = "https://customer-iap.armoriq.ai";
 
 function resolveIapBaseUrl(fallback?: string): string {
   const configured = process.env.IAP_BACKEND_URL || process.env.CONMAP_AUTO_URL;
@@ -103,10 +103,10 @@ function resolveIapBaseUrl(fallback?: string): string {
   if (fallback) {
     return fallback;
   }
-  // Production: https://customer-iap.armoriq.ai
+  // Production: https://customer-api.armoriq.ai (Backend)
   return (process.env.NODE_ENV || "").toLowerCase() === "production"
-    ? "https://customer-iap.armoriq.ai"
-    : "http://localhost:3000";
+    ? "https://customer-api.armoriq.ai"
+    : "https://customer-api.armoriq.ai";
 }
 
 function resolveCsrgBaseUrl(fallback?: string): string {
