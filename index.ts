@@ -514,7 +514,7 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
       readBoolean(raw.cryptoPolicyEnabled) ??
       readBoolean(process.env.ARMORIQ_CRYPTO_POLICY_ENABLED),
     csrgEndpoint:
-      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? "http://localhost:8000",
+      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? "https://customer-iap.armoriq.ai",
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
     useProduction: readBoolean(raw.useProduction),
     iapEndpoint: readString(raw.iapEndpoint) ?? readString(process.env.IAP_ENDPOINT),
