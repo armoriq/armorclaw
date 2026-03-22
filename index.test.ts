@@ -1,5 +1,3 @@
-import type { Api, Model } from "@mariozechner/pi-ai";
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,10 +24,10 @@ vi.mock("@armoriq/sdk", () => ({
   },
 }));
 
-type HookName = "before_agent_start" | "before_tool_call" | "agent_end";
+type HookName = "before_tool_call" | "agent_end" | "inbound_claim" | "before_prompt_build" | "llm_input";
 
 function createApi(pluginConfig: Record<string, unknown>) {
-  const handlers = new Map<HookName, Array<(event: any, ctx: any) => any>>();
+  const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
   const tools: Array<(ctx: any) => any> = [];
   const api = {
     id: "armoriq",
@@ -41,7 +39,12 @@ function createApi(pluginConfig: Record<string, unknown>) {
       warn: vi.fn(),
       error: vi.fn(),
     },
-    on: (name: HookName, handler: (event: any, ctx: any) => any) => {
+    runtime: {
+      modelAuth: {
+        resolveApiKeyForProvider: async () => ({ apiKey: "test-api-key" }),
+      },
+    },
+    on: (name: string, handler: (event: any, ctx: any) => any) => {
       const list = handlers.get(name) ?? [];
       list.push(handler);
       handlers.set(name, list);
@@ -56,22 +59,54 @@ function createApi(pluginConfig: Record<string, unknown>) {
 }
 
 function createCtx(runId: string) {
-  const model = { provider: "test", id: "model" } as Model<Api>;
-  const modelRegistry = {
-    getApiKey: async () => "test-api-key",
-  } as unknown as ModelRegistry;
   return {
     runId,
     sessionKey: "session:test",
-    model,
-    modelRegistry,
-    messageChannel: "whatsapp",
-    accountId: "acct-1",
-    senderId: "sender-1",
-    senderName: "Sender",
-    senderUsername: "sender",
-    senderE164: "+15550001111",
+    agentId: "agent-1",
   };
+}
+
+/** Fire inbound_claim to populate sender identity cache */
+async function fireInboundClaim(handlers: Map<string, Array<(event: any, ctx: any) => any>>) {
+  const handler = handlers.get("inbound_claim")?.[0];
+  await handler?.(
+    {
+      content: "test",
+      channel: "whatsapp",
+      accountId: "acct-1",
+      senderId: "sender-1",
+      senderName: "Sender",
+      senderUsername: "sender",
+      conversationId: "session:test",
+      isGroup: false,
+    },
+    { channelId: "whatsapp" },
+  );
+}
+
+/** Fire llm_input to trigger plan generation */
+async function fireLlmInput(
+  handlers: Map<string, Array<(event: any, ctx: any) => any>>,
+  runId: string,
+  prompt = "Read a file",
+  systemPrompt = "Available tools:\n- read: Read files\n- send_email: Send email\n- write_file: Write file",
+) {
+  const handler = handlers.get("llm_input")?.[0];
+  await handler?.(
+    {
+      runId,
+      sessionId: "session:test",
+      provider: "test",
+      model: "model",
+      systemPrompt,
+      prompt,
+      historyMessages: [],
+      imagesCount: 0,
+    },
+    { agentId: "agent-1", sessionKey: "session:test" },
+  );
+  // Wait for the planning promise to complete
+  await new Promise((r) => setTimeout(r, 10));
 }
 
 describe("ArmorIQ plugin", () => {
@@ -95,7 +130,7 @@ describe("ArmorIQ plugin", () => {
     vi.unstubAllGlobals();
   });
 
-  it("captures a plan on agent start and allows matching tool calls", async () => {
+  it("captures a plan via llm_input and allows matching tool calls", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
@@ -111,16 +146,10 @@ describe("ArmorIQ plugin", () => {
       }),
     });
 
-    const ctx = createCtx("run-allow");
-    const beforeAgentStart = handlers.get("before_agent_start")?.[0];
-    await beforeAgentStart?.(
-      {
-        prompt: "Read a file",
-        tools: [{ name: "read", description: "Read files" }],
-      },
-      ctx,
-    );
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-allow", "Read a file", "- read: Read files");
 
+    const ctx = createCtx("run-allow");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "read", params: { path: "demo.txt" } }, ctx);
     expect(result?.block).not.toBe(true);
@@ -138,16 +167,10 @@ describe("ArmorIQ plugin", () => {
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
     expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("ArmorIQ API key missing");
+    expect(result?.blockReason).toContain("API key missing");
   });
 
-  it("accepts tool calls when intent token header includes the tool", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ allowed: true }),
-    });
-
+  it("allows tool calls when plan includes the tool", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
@@ -156,14 +179,17 @@ describe("ArmorIQ plugin", () => {
     });
     register(api as any);
 
-    const ctx = {
-      ...createCtx("run-intent-header"),
-      intentTokenRaw: JSON.stringify({
-        plan: { steps: [{ action: "web_fetch", mcp: "openclaw" }] },
-        expiresAt: Date.now() / 1000 + 60,
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "web_fetch", mcp: "openclaw" }],
+        metadata: { goal: "fetch a URL" },
       }),
-    };
+    });
 
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-intent-header", "Fetch a URL");
+
+    const ctx = createCtx("run-intent-header");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
       { toolName: "web_fetch", params: { url: "https://example.com" } },
@@ -172,7 +198,7 @@ describe("ArmorIQ plugin", () => {
     expect(result?.block).not.toBe(true);
   });
 
-  it("blocks tool calls when intent token header excludes the tool", async () => {
+  it("blocks tool calls when plan excludes the tool", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
@@ -181,21 +207,24 @@ describe("ArmorIQ plugin", () => {
     });
     register(api as any);
 
-    const ctx = {
-      ...createCtx("run-intent-block"),
-      intentTokenRaw: JSON.stringify({
-        plan: { steps: [{ action: "read", mcp: "openclaw" }] },
-        expiresAt: Date.now() / 1000 + 60,
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "read", mcp: "openclaw" }],
+        metadata: { goal: "read a file" },
       }),
-    };
+    });
 
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-intent-block", "Read a file");
+
+    const ctx = createCtx("run-intent-block");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("intent drift");
   });
 
-  it("allows CSRG verify-step when IAP returns allowed", async () => {
+  it("allows tool call when cached plan matches and token is valid", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
@@ -205,148 +234,22 @@ describe("ArmorIQ plugin", () => {
     });
     register(api as any);
 
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          allowed: true,
-          reason: "ok",
-          step: { step_index: 0, action: "web_fetch", params: {} },
-          execution_state: {
-            plan_id: "plan-1",
-            intent_reference: "plan-1",
-            executed_steps: [],
-            current_step: 0,
-            total_steps: 1,
-            status: "in_progress",
-            is_completed: false,
-          },
-        }),
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "web_fetch", mcp: "openclaw" }],
+        metadata: { goal: "fetch a URL" },
+      }),
     });
 
-    const ctx = {
-      ...createCtx("run-csrg-allow"),
-      intentTokenRaw: "jwt-token",
-      csrgPath: "/steps/[0]/action",
-      csrgProofRaw: JSON.stringify([{ position: "left", sibling_hash: "abc" }]),
-      csrgValueDigest: "deadbeef",
-    };
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-csrg-allow", "Fetch a URL");
 
+    const ctx = createCtx("run-csrg-allow");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
       { toolName: "web_fetch", params: { url: "https://example.com" } },
       ctx,
     );
-    expect(result?.block).not.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("blocks CSRG verify-step when IAP returns denied", async () => {
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-1",
-      agentId: "agent-1",
-      backendEndpoint: "https://iap.example",
-    });
-    register(api as any);
-
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          allowed: false,
-          reason: "denied",
-          step: { step_index: 0, action: "web_fetch", params: {} },
-          execution_state: {
-            plan_id: "plan-1",
-            intent_reference: "plan-1",
-            executed_steps: [],
-            current_step: 0,
-            total_steps: 1,
-            status: "blocked",
-            is_completed: false,
-          },
-        }),
-    });
-
-    const ctx = {
-      ...createCtx("run-csrg-deny"),
-      intentTokenRaw: "jwt-token",
-      csrgPath: "/steps/[0]/action",
-      csrgProofRaw: JSON.stringify([{ position: "left", sibling_hash: "abc" }]),
-      csrgValueDigest: "deadbeef",
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
-    expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("denied");
-  });
-
-  it("blocks CSRG verification when proofs are required but missing", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "true";
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-1",
-      agentId: "agent-1",
-      backendEndpoint: "https://iap.example",
-    });
-    register(api as any);
-
-    const ctx = {
-      ...createCtx("run-csrg-missing"),
-      intentTokenRaw: "jwt-token",
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
-    expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("CSRG proof headers missing");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("allows CSRG verification when proofs are optional and missing", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "false";
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-1",
-      agentId: "agent-1",
-      backendEndpoint: "https://iap.example",
-    });
-    register(api as any);
-
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          allowed: true,
-          reason: "ok",
-          step: { step_index: 0, action: "web_fetch", params: {} },
-          execution_state: {
-            plan_id: "plan-1",
-            intent_reference: "plan-1",
-            executed_steps: [],
-            current_step: 0,
-            total_steps: 1,
-            status: "in_progress",
-            is_completed: false,
-          },
-        }),
-    });
-
-    const ctx = {
-      ...createCtx("run-csrg-optional"),
-      intentTokenRaw: "jwt-token",
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
     expect(result?.block).not.toBe(true);
   });
 
@@ -361,6 +264,7 @@ describe("ArmorIQ plugin", () => {
     });
     register(api as any);
 
+    await fireInboundClaim(handlers);
     const ctx = createCtx("run-policy-deny");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "policy_update", params: {} }, ctx);
@@ -409,14 +313,17 @@ describe("ArmorIQ plugin", () => {
     });
     expect(updateResult?.details?.version).toBeGreaterThan(0);
 
-    const ctx = {
-      ...createCtx("run-policy-block"),
-      intentTokenRaw: JSON.stringify({
-        plan: { steps: [{ action: "send_email", mcp: "openclaw" }] },
-        expiresAt: Date.now() / 1000 + 60,
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "send_email", mcp: "openclaw" }],
+        metadata: { goal: "send email" },
       }),
-    };
+    });
 
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-policy-block", "Send email");
+
+    const ctx = createCtx("run-policy-block");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
       { toolName: "send_email", params: { body: "Card 4111 1111 1111 1111" } },
@@ -426,147 +333,66 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("policy deny");
   });
 
-  it("blocks when intent token has embedded plan but proofs required and missing", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "true";
-    process.env.CSRG_VERIFY_ENABLED = "true";
-
+  it("before_prompt_build returns prependSystemContext when policy updates enabled", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
       userId: "user-1",
       agentId: "agent-1",
-      backendEndpoint: "https://iap.example",
+      policyUpdateEnabled: true,
+      policyUpdateAllowList: ["*"],
     });
     register(api as any);
 
-    const intentToken = {
-      plan: {
-        steps: [{ action: "send_email", params: { to: "user@example.com" }, mcp: "openclaw" }],
-        metadata: { goal: "Send email" },
-      },
-      expiresAt: Date.now() / 1000 + 300,
-    };
-
-    const ctx = {
-      ...createCtx("run-proofs-required-missing"),
-      intentTokenRaw: JSON.stringify(intentToken),
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.(
-      { toolName: "send_email", params: { to: "user@example.com" } },
-      ctx,
-    );
-
-    expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("CSRG proof headers");
-    expect(fetchMock).not.toHaveBeenCalled();
+    const beforePromptBuild = handlers.get("before_prompt_build")?.[0];
+    const result = await beforePromptBuild?.({}, {});
+    expect(result?.prependSystemContext).toBeTruthy();
+    expect(result?.prependSystemContext).toContain("Policy updates");
   });
 
-  it("DETAILED: shows full enforcement flow with logging", async () => {
-    const logs: string[] = [];
-    const log = (msg: string) => {
-      logs.push(msg);
-      console.log(`[ENFORCE] ${msg}`);
-    };
-
-    log("=== ArmorIQ OpenClaw Plugin Enforcement Test ===");
-    log("Step 1: Setting up plugin with API key and IAP endpoint");
-
-    fetchMock.mockImplementation(async (url: string, options: any) => {
-      log(`Step 3: IAP verify-step called`);
-      log(`  URL: ${url}`);
-      log(`  Body: ${options?.body}`);
-      return {
-        ok: true,
-        status: 200,
-        text: async () => {
-          const response = {
-            allowed: true,
-            reason: "Step verified successfully",
-            verification_source: "iap",
-            step: { step_index: 0, action: "send_email", params: { to: "user@example.com" } },
-            execution_state: {
-              plan_id: "plan-123",
-              intent_reference: "plan-123",
-              executed_steps: [],
-              current_step: 1,
-              total_steps: 2,
-              status: "in_progress",
-              is_completed: false,
-            },
-          };
-          log(`Step 4: IAP Response: ${JSON.stringify(response, null, 2)}`);
-          return JSON.stringify(response);
-        },
-      };
-    });
-
+  it("before_prompt_build returns undefined when policy updates disabled", async () => {
     const { api, handlers } = createApi({
       enabled: true,
-      apiKey: "ak_live_test123",
-      userId: "user-enforcement-test",
-      agentId: "agent-enforcement-test",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
     });
     register(api as any);
 
-    const intentToken = {
-      plan: {
-        steps: [
-          { action: "send_email", params: { to: "user@example.com" }, mcp: "openclaw" },
-          { action: "read_file", params: { path: "/tmp/data.txt" }, mcp: "openclaw" },
-        ],
-        metadata: { goal: "Send email and read file" },
-      },
-      expiresAt: Date.now() / 1000 + 300,
-    };
-
-    log(`Step 2: Tool call received with intent token`);
-    log(`  Tool: send_email`);
-    log(`  Params: { to: "user@example.com" }`);
-    log(`  Intent Token Plan: ${JSON.stringify(intentToken.plan, null, 2)}`);
-
-    const ctx = {
-      ...createCtx("run-enforcement-detailed"),
-      intentTokenRaw: JSON.stringify(intentToken),
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.(
-      { toolName: "send_email", params: { to: "user@example.com" } },
-      ctx,
-    );
-
-    log(`Step 5: Enforcement Result: ${JSON.stringify(result, null, 2)}`);
-    log(`  Blocked: ${result?.block ?? false}`);
-    log(`  Reason: ${result?.blockReason ?? "N/A (allowed)"}`);
-
-    expect(result?.block).not.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    log("=== Enforcement Flow Summary ===");
-    log("1. Plugin receives before_tool_call hook");
-    log("2. Extracts intent token from context (intentTokenRaw)");
-    log("3. Validates tool against plan (checkIntentTokenPlan)");
-    log("4. ALWAYS calls IAP verifyStep (non-conditional)");
-    log("5. Returns allow/block based on IAP response");
-    log("================================");
+    const beforePromptBuild = handlers.get("before_prompt_build")?.[0];
+    const result = await beforePromptBuild?.({}, {});
+    expect(result).toBeUndefined();
   });
 
-  it("ONE TOKEN PER RUN: shares intent token across multiple tool calls", async () => {
-    const logs: string[] = [];
-    const log = (msg: string) => {
-      logs.push(msg);
-      console.log(`[TOKEN-REUSE] ${msg}`);
-    };
+  it("works with config-based identity when inbound_claim never fires (CLI mode)", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
 
-    log("=== Testing One Intent Token Per Run ===");
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "read", mcp: "openclaw" }],
+        metadata: { goal: "read a file" },
+      }),
+    });
 
+    // Fire llm_input WITHOUT inbound_claim (CLI mode)
+    await fireLlmInput(handlers, "run-cli-mode", "Read a file");
+
+    const ctx = createCtx("run-cli-mode");
+    const beforeToolCall = handlers.get("before_tool_call")?.[0];
+    const result = await beforeToolCall?.({ toolName: "read", params: { path: "demo.txt" } }, ctx);
+    expect(result?.block).not.toBe(true);
+  });
+
+  it("ONE TOKEN PER RUN: shares plan across multiple tool calls", async () => {
     let tokenCreationCount = 0;
     completeSimpleMock.mockImplementation(async () => {
       tokenCreationCount++;
-      log(`Token creation #${tokenCreationCount}`);
       return {
         content: JSON.stringify({
           steps: [
@@ -579,936 +405,89 @@ describe("ArmorIQ plugin", () => {
       };
     });
 
-    fetchMock.mockImplementation(async (url: string, options: any) => {
-      const body = JSON.parse(options?.body || "{}");
-      log(`IAP verify-step called for tool: ${body.tool_name}`);
-      return {
-        ok: true,
-        status: 200,
-        text: async () =>
-          JSON.stringify({
-            allowed: true,
-            reason: "Step verified",
-            verification_source: "iap",
-            step: { step_index: 0, action: body.tool_name, params: {} },
-            execution_state: {
-              plan_id: "plan-123",
-              intent_reference: "plan-123",
-              executed_steps: [],
-              current_step: 1,
-              total_steps: 3,
-              status: "in_progress",
-              is_completed: false,
-            },
-          }),
-      };
-    });
-
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
       userId: "user-1",
       agentId: "agent-1",
-      backendEndpoint: "https://iap.example",
     });
     register(api as any);
 
     const stableRunId = "stable-run-456";
-    const ctx = createCtx(stableRunId);
 
-    log(`\n--- Agent Start (runId: ${stableRunId}) ---`);
-    const beforeAgentStart = handlers.get("before_agent_start")?.[0];
-    await beforeAgentStart?.(
-      {
-        prompt: "Send email, read file, write file",
-        tools: [
-          { name: "send_email", description: "Send email" },
-          { name: "read_file", description: "Read file" },
-          { name: "write_file", description: "Write file" },
-        ],
-      },
-      ctx,
-    );
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, stableRunId, "Send email, read file, write file");
 
-    log(`Token creation count after agent_start: ${tokenCreationCount}`);
     expect(tokenCreationCount).toBe(1);
 
+    const ctx = createCtx(stableRunId);
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
 
-    log(`\n--- Tool Call 1: send_email (runId: ${stableRunId}) ---`);
     const result1 = await beforeToolCall?.(
       { toolName: "send_email", params: { to: "user@example.com" } },
       ctx,
     );
-    log(`Result 1: ${result1?.block ? "BLOCKED" : "ALLOWED"}`);
     expect(result1?.block).not.toBe(true);
 
-    log(`\n--- Tool Call 2: read_file (runId: ${stableRunId}) ---`);
     const result2 = await beforeToolCall?.(
       { toolName: "read_file", params: { path: "/tmp/data.txt" } },
       ctx,
     );
-    log(`Result 2: ${result2?.block ? "BLOCKED" : "ALLOWED"}`);
     expect(result2?.block).not.toBe(true);
 
-    log(`\n--- Tool Call 3: write_file (runId: ${stableRunId}) ---`);
     const result3 = await beforeToolCall?.(
       { toolName: "write_file", params: { path: "/tmp/output.txt" } },
       ctx,
     );
-    log(`Result 3: ${result3?.block ? "BLOCKED" : "ALLOWED"}`);
     expect(result3?.block).not.toBe(true);
-
-    log(`\n=== Final Token Creation Count: ${tokenCreationCount} ===`);
-    log(`IAP verify-step calls: ${fetchMock.mock.calls.length}`);
-    log(`Explanation: Cached plan allows local validation without IAP calls`);
-    log(`\n✅ ONE intent token shared across 3 tool calls!`);
 
     expect(tokenCreationCount).toBe(1);
-    log(`\nFlow: Token created once during agent_start, then reused for all tool calls`);
 
-    log(`\n--- Agent End (cleanup cache) ---`);
+    // Cleanup
     const agentEnd = handlers.get("agent_end")?.[0];
     await agentEnd?.({}, ctx);
-    log(`Cache cleared for runId: ${stableRunId}`);
   });
 
-  it("FULL FLOW WITH VERIFICATION: shows complete enforcement with IAP calls", async () => {
-    const logs: string[] = [];
-    const log = (msg: string) => {
-      logs.push(msg);
-      console.log(`[FULL-FLOW] ${msg}`);
-    };
-
-    log("=== Complete Enforcement Flow Test ===");
-    log("Scenario: Intent token passed via header, IAP verification for each tool");
-
-    let iapCallCount = 0;
-    fetchMock.mockImplementation(async (url: string, options: any) => {
-      iapCallCount++;
-      const body = JSON.parse(options?.body || "{}");
-      const toolName = body.tool_name || "unknown";
-
-      log(`\n[IAP Call #${iapCallCount}] POST ${url}`);
-      log(`  Tool: ${toolName}`);
-      log(`  Token present: ${body.token ? "YES" : "NO"}`);
-      log(`  Token length: ${body.token?.length || 0} chars`);
-
-      const response = {
-        ok: true,
-        status: 200,
-        text: async () => {
-          const result = {
-            allowed: true,
-            reason: `Step ${iapCallCount} verified successfully`,
-            verification_source: "iap",
-            step: {
-              step_index: iapCallCount - 1,
-              action: toolName,
-              params: {},
-            },
-            execution_state: {
-              plan_id: "plan-xyz-789",
-              intent_reference: "plan-xyz-789",
-              executed_steps: Array.from({ length: iapCallCount - 1 }, (_, i) => i),
-              current_step: iapCallCount,
-              total_steps: 3,
-              status: "in_progress",
-              is_completed: iapCallCount === 3,
-            },
-          };
-          log(`  [IAP Response] allowed=${result.allowed}, step=${result.step.step_index}`);
-          return JSON.stringify(result);
-        },
-      };
-      return response;
-    });
-
+  it("inbound_claim caches sender identity for before_tool_call", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
-      userId: "user-full-flow",
-      agentId: "agent-full-flow",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
+      userId: "user-1",
+      agentId: "agent-1",
+      policyUpdateEnabled: true,
+      policyUpdateAllowList: ["sender-1"],
     });
     register(api as any);
 
-    const intentToken = {
-      plan: {
-        steps: [
-          { action: "send_email", params: { to: "alice@example.com" }, mcp: "openclaw" },
-          { action: "read_file", params: { path: "/data/report.txt" }, mcp: "openclaw" },
-          { action: "write_file", params: { path: "/output/summary.txt" }, mcp: "openclaw" },
-        ],
-        metadata: {
-          goal: "Process report and send email",
-          plan_id: "plan-xyz-789",
-        },
-      },
-      expiresAt: Date.now() / 1000 + 600,
-    };
+    // Fire inbound_claim to cache sender identity
+    await fireInboundClaim(handlers);
 
-    const intentTokenRaw = JSON.stringify(intentToken);
-    const stableRunId = "full-flow-run-999";
-
-    log(`\nRun ID: ${stableRunId}`);
-    log(`Intent Token Plan: ${intentToken.plan.steps.length} steps`);
-    log(`  Step 0: ${intentToken.plan.steps[0].action}`);
-    log(`  Step 1: ${intentToken.plan.steps[1].action}`);
-    log(`  Step 2: ${intentToken.plan.steps[2].action}`);
-
+    // Policy update should be allowed for sender-1
+    const ctx = createCtx("run-sender-cache");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
-
-    log("\n--- Executing Tool Call 1: send_email ---");
-    const ctx1 = {
-      ...createCtx(stableRunId),
-      intentTokenRaw,
-    };
-
-    const result1 = await beforeToolCall?.(
-      { toolName: "send_email", params: { to: "alice@example.com" } },
-      ctx1,
-    );
-
-    log(`[Plugin Decision] ${result1?.block ? `BLOCKED: ${result1.blockReason}` : "ALLOWED"}`);
-    expect(result1?.block).not.toBe(true);
-
-    log("\n--- Executing Tool Call 2: read_file ---");
-    const ctx2 = {
-      ...createCtx(stableRunId),
-      intentTokenRaw,
-    };
-
-    const result2 = await beforeToolCall?.(
-      { toolName: "read_file", params: { path: "/data/report.txt" } },
-      ctx2,
-    );
-
-    log(`[Plugin Decision] ${result2?.block ? `BLOCKED: ${result2.blockReason}` : "ALLOWED"}`);
-    expect(result2?.block).not.toBe(true);
-
-    log("\n--- Executing Tool Call 3: write_file ---");
-    const ctx3 = {
-      ...createCtx(stableRunId),
-      intentTokenRaw,
-    };
-
-    const result3 = await beforeToolCall?.(
-      { toolName: "write_file", params: { path: "/output/summary.txt" } },
-      ctx3,
-    );
-
-    log(`[Plugin Decision] ${result3?.block ? `BLOCKED: ${result3.blockReason}` : "ALLOWED"}`);
-    expect(result3?.block).not.toBe(true);
-
-    log("\n=== Final Results ===");
-    log(`Total IAP verification calls: ${iapCallCount}`);
-    log(`All tools allowed: YES`);
-    log(`Same intent token used: YES (passed via context)`);
-
-    expect(iapCallCount).toBe(3);
-
-    log("\n=== Flow Summary ===");
-    log("1. Intent token with 3-step plan passed via context");
-    log("2. Each tool call validates against plan locally");
-    log("3. Each tool call makes IAP verification request");
-    log("4. IAP returns execution state (current_step, completed steps)");
-    log("5. All 3 tools executed successfully with same intent token");
-    log("================================");
+    const result = await beforeToolCall?.({ toolName: "policy_update", params: {} }, ctx);
+    expect(result?.block).not.toBe(true);
   });
 
-  it("COMPLETE FLOW: Intent token + CSRG proofs + IAP verification", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "false";
-    process.env.CSRG_VERIFY_ENABLED = "true";
-
-    const logs: string[] = [];
-    const log = (msg: string) => {
-      logs.push(msg);
-      console.log(`[COMPLETE] ${msg}`);
-    };
-
-    log("╔═══════════════════════════════════════════════════════════╗");
-    log("║   COMPLETE ARMORIQ ENFORCEMENT FLOW WITH CSRG PROOFS      ║");
-    log("╚═══════════════════════════════════════════════════════════╝");
-
-    let iapCallCount = 0;
-    fetchMock.mockImplementation(async (url: string, options: any) => {
-      iapCallCount++;
-      const body = JSON.parse(options?.body || "{}");
-      const toolName = body.tool_name || "unknown";
-      const hasProof = body.proof && Array.isArray(body.proof);
-      const hasPath = !!body.path;
-      const hasValueDigest = !!body.context?.csrg_value_digest;
-
-      log(`\n┌─────────────────────────────────────────────────────────┐`);
-      log(`│ IAP VERIFICATION REQUEST #${iapCallCount}                              │`);
-      log(`└─────────────────────────────────────────────────────────┘`);
-      log(`  🔗 Endpoint: ${url}`);
-      log(`  🛠️  Tool: ${toolName}`);
-      log(`  🎫 Token: ${body.token ? `Present (${body.token.length} chars)` : "MISSING"}`);
-      log(`  📍 Path: ${body.path || "N/A"}`);
-      log(`  🔢 Step Index: ${body.step_index ?? "N/A"}`);
-      log(`  🌲 Merkle Proof: ${hasProof ? `YES (${body.proof.length} siblings)` : "NO"}`);
-      log(
-        `  🔐 Value Digest: ${hasValueDigest ? body.context.csrg_value_digest.substring(0, 16) + "..." : "NO"}`,
-      );
-
-      if (hasProof) {
-        log(`  📝 Proof Details:`);
-        body.proof.forEach((p: any, i: number) => {
-          log(`     [${i}] ${p.position}: ${p.sibling_hash.substring(0, 16)}...`);
-        });
-      }
-
-      const result = {
-        allowed: true,
-        reason: hasProof
-          ? `CSRG cryptographic proof verified + IAP step ${iapCallCount} approved`
-          : `IAP step ${iapCallCount} verified (no CSRG proof)`,
-        verification_source: hasProof ? "csrg" : "iap",
-        step: {
-          step_index: iapCallCount - 1,
-          action: toolName,
-          params: {},
-        },
-        execution_state: {
-          plan_id: "plan-complete-123",
-          intent_reference: "plan-complete-123",
-          executed_steps: Array.from({ length: iapCallCount - 1 }, (_, i) => i),
-          current_step: iapCallCount,
-          total_steps: 3,
-          status: iapCallCount === 3 ? "completed" : "in_progress",
-          is_completed: iapCallCount === 3,
-        },
-        ...(hasProof && {
-          node_hash: "abcdef123456789",
-          csrg_path: body.path,
-          csrg_merkle_root: "root_hash_xyz789",
-        }),
-      };
-
-      log(`\n  ✅ IAP RESPONSE:`);
-      log(`     Allowed: ${result.allowed}`);
-      log(`     Reason: ${result.reason}`);
-      log(`     Verification Source: ${result.verification_source.toUpperCase()}`);
-      log(`     Execution Status: ${result.execution_state.status}`);
-      log(`     Completed Steps: [${result.execution_state.executed_steps.join(", ")}]`);
-      log(
-        `     Current Step: ${result.execution_state.current_step}/${result.execution_state.total_steps}`,
-      );
-      if (result.node_hash) {
-        log(`     🌲 Merkle Root: ${result.csrg_merkle_root}`);
-        log(`     🔗 Node Hash: ${result.node_hash}`);
-      }
-
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify(result),
-      };
-    });
-
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_complete_test",
-      userId: "user-complete",
-      agentId: "agent-complete",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
-    });
-    register(api as any);
-
-    const intentToken = {
-      plan: {
-        steps: [
-          { action: "send_email", params: { to: "user@example.com" }, mcp: "openclaw" },
-          { action: "read_file", params: { path: "/secure/data.json" }, mcp: "openclaw" },
-          { action: "write_file", params: { path: "/output/result.json" }, mcp: "openclaw" },
-        ],
-        metadata: {
-          goal: "Process secure data and send notification",
-          plan_id: "plan-complete-123",
-        },
-      },
-      expiresAt: Date.now() / 1000 + 3600,
-      step_proofs: [
-        {
-          step_index: 0,
-          path: "/steps/[0]/action",
-          proof: [
-            { position: "left", sibling_hash: "hash_sibling_1_send_email" },
-            { position: "right", sibling_hash: "hash_sibling_2_send_email" },
-          ],
-          value_digest: "digest_send_email_step0",
-        },
-        {
-          step_index: 1,
-          path: "/steps/[1]/action",
-          proof: [
-            { position: "right", sibling_hash: "hash_sibling_1_read_file" },
-            { position: "left", sibling_hash: "hash_sibling_2_read_file" },
-          ],
-          value_digest: "digest_read_file_step1",
-        },
-        {
-          step_index: 2,
-          path: "/steps/[2]/action",
-          proof: [
-            { position: "left", sibling_hash: "hash_sibling_1_write_file" },
-            { position: "left", sibling_hash: "hash_sibling_2_write_file" },
-          ],
-          value_digest: "digest_write_file_step2",
-        },
-      ],
-    };
-
-    const intentTokenRaw = JSON.stringify(intentToken);
-    const stableRunId = "complete-flow-run-123";
-
-    log(`\n┌─────────────────────────────────────────────────────────┐`);
-    log(`│ SETUP DETAILS                                           │`);
-    log(`└─────────────────────────────────────────────────────────┘`);
-    log(`  🆔 Run ID: ${stableRunId}`);
-    log(`  🎫 Intent Token: ${intentToken.plan.steps.length} steps in plan`);
-    log(`  🌲 CSRG Proofs: ${intentToken.step_proofs.length} proofs embedded in token`);
-    log(`  ⏰ Token Expiry: ${new Date((intentToken.expiresAt || 0) * 1000).toISOString()}`);
-    log(`  📋 Plan Goal: ${intentToken.plan.metadata.goal}`);
-    log(`\n  📝 Plan Steps:`);
-    intentToken.plan.steps.forEach((step, i) => {
-      log(`     [${i}] ${step.action} - ${JSON.stringify(step.params)}`);
-    });
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-
-    // TOOL CALL 1
-    log(`\n╔═══════════════════════════════════════════════════════════╗`);
-    log(`║ TOOL CALL #1: send_email                                  ║`);
-    log(`╚═══════════════════════════════════════════════════════════╝`);
-
-    const ctx1 = {
-      ...createCtx(stableRunId),
-      intentTokenRaw,
-    };
-
-    log(`  🔍 Plugin Processing:`);
-    log(`     - Extract intent token from context`);
-    log(`     - Parse embedded plan (${intentToken.plan.steps.length} steps)`);
-    log(`     - Check if 'send_email' is in plan: YES ✓`);
-    log(`     - Extract CSRG proofs from token for step 0`);
-    log(`     - Call IAP verify-step with token + proofs`);
-
-    const result1 = await beforeToolCall?.(
-      { toolName: "send_email", params: { to: "user@example.com" } },
-      ctx1,
-    );
-
-    log(
-      `\n  🎯 PLUGIN DECISION: ${result1?.block ? `❌ BLOCKED - ${result1.blockReason}` : "✅ ALLOWED"}`,
-    );
-    expect(result1?.block).not.toBe(true);
-
-    // TOOL CALL 2
-    log(`\n╔═══════════════════════════════════════════════════════════╗`);
-    log(`║ TOOL CALL #2: read_file                                   ║`);
-    log(`╚═══════════════════════════════════════════════════════════╝`);
-
-    const ctx2 = {
-      ...createCtx(stableRunId),
-      intentTokenRaw,
-    };
-
-    log(`  🔍 Plugin Processing:`);
-    log(`     - Reuse same intent token from context`);
-    log(`     - Check if 'read_file' is in plan: YES ✓`);
-    log(`     - Extract CSRG proofs from token for step 1`);
-    log(`     - Call IAP verify-step with token + proofs`);
-
-    const result2 = await beforeToolCall?.(
-      { toolName: "read_file", params: { path: "/secure/data.json" } },
-      ctx2,
-    );
-
-    log(
-      `\n  🎯 PLUGIN DECISION: ${result2?.block ? `❌ BLOCKED - ${result2.blockReason}` : "✅ ALLOWED"}`,
-    );
-    expect(result2?.block).not.toBe(true);
-
-    // TOOL CALL 3
-    log(`\n╔═══════════════════════════════════════════════════════════╗`);
-    log(`║ TOOL CALL #3: write_file                                  ║`);
-    log(`╚═══════════════════════════════════════════════════════════╝`);
-
-    const ctx3 = {
-      ...createCtx(stableRunId),
-      intentTokenRaw,
-    };
-
-    log(`  🔍 Plugin Processing:`);
-    log(`     - Reuse same intent token from context`);
-    log(`     - Check if 'write_file' is in plan: YES ✓`);
-    log(`     - Extract CSRG proofs from token for step 2`);
-    log(`     - Call IAP verify-step with token + proofs`);
-
-    const result3 = await beforeToolCall?.(
-      { toolName: "write_file", params: { path: "/output/result.json" } },
-      ctx3,
-    );
-
-    log(
-      `\n  🎯 PLUGIN DECISION: ${result3?.block ? `❌ BLOCKED - ${result3.blockReason}` : "✅ ALLOWED"}`,
-    );
-    expect(result3?.block).not.toBe(true);
-
-    // SUMMARY
-    log(`\n╔═══════════════════════════════════════════════════════════╗`);
-    log(`║ EXECUTION SUMMARY                                         ║`);
-    log(`╚═══════════════════════════════════════════════════════════╝`);
-    log(`  📊 Statistics:`);
-    log(`     Total IAP calls: ${iapCallCount}`);
-    log(`     Tools executed: 3`);
-    log(`     Tools blocked: 0`);
-    log(`     Success rate: 100%`);
-    log(`  🔐 Security:`);
-    log(`     Same intent token: ✅ YES`);
-    log(`     CSRG proofs verified: ✅ YES (3 proofs)`);
-    log(`     Intent drift: ❌ NONE`);
-    log(`     Token expiry check: ✅ PASSED`);
-
-    log(`\n╔═══════════════════════════════════════════════════════════╗`);
-    log(`║ ENFORCEMENT FLOW BREAKDOWN                                ║`);
-    log(`╚═══════════════════════════════════════════════════════════╝`);
-    log(`  1️⃣  Intent Token Creation (before agent start)`);
-    log(`     - Plan with 3 steps generated`);
-    log(`     - CSRG proofs embedded in token`);
-    log(`     - Token issued with expiry timestamp`);
-    log(`\n  2️⃣  Plugin Hook: before_tool_call (for each tool)`);
-    log(`     - Extract intentTokenRaw from context`);
-    log(`     - Parse JSON to get plan + step_proofs`);
-    log(`     - Validate tool name against plan.steps[].action`);
-    log(`\n  3️⃣  Local Plan Validation`);
-    log(`     - Check token expiry (expiresAt vs current time)`);
-    log(`     - Check tool in allowed actions (intent drift prevention)`);
-    log(`     - Extract matching step from plan`);
-    log(`\n  4️⃣  CSRG Proof Resolution`);
-    log(`     - Look for step_proofs in token for current step index`);
-    log(`     - Extract: path, proof array, value_digest`);
-    log(`     - Build CsrgProofHeaders object`);
-    log(`\n  5️⃣  IAP Verification Request`);
-    log(`     - POST https://customer-iap.armoriq.ai/iap/verify-step`);
-    log(`     - Payload: { token, tool_name, path, proof, context }`);
-    log(`     - IAP validates: JWT, plan_id, step sequence, proofs`);
-    log(`\n  6️⃣  IAP Response Processing`);
-    log(`     - allowed: true/false`);
-    log(`     - verification_source: "csrg" or "iap"`);
-    log(`     - execution_state: tracks progress`);
-    log(`     - If CSRG: node_hash + merkle_root returned`);
-    log(`\n  7️⃣  Plugin Decision`);
-    log(`     - allowed=true → Return params, tool executes`);
-    log(`     - allowed=false → Return block=true, blockReason`);
-    log(`\n  8️⃣  Tool Execution (OpenClaw framework)`);
-    log(`     - Tool function called with validated params`);
-    log(`     - Results returned to agent/user`);
-
-    log(`\n╔═══════════════════════════════════════════════════════════╗`);
-    log(`║ ✅ COMPLETE FLOW TEST PASSED                              ║`);
-    log(`╚═══════════════════════════════════════════════════════════╝`);
-
-    expect(iapCallCount).toBe(3);
-  });
-
-  it("DUPLICATE TOOLS: selects correct proof when same tool appears multiple times with different params", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "false";
-    process.env.CSRG_VERIFY_ENABLED = "true";
-
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          allowed: true,
-          reason: "Step verified",
-          verification_source: "csrg",
-          step: { step_index: 2, action: "send_email", params: {} },
-          execution_state: {
-            plan_id: "plan-duplicate",
-            intent_reference: "plan-duplicate",
-            executed_steps: [0, 1],
-            current_step: 3,
-            total_steps: 3,
-            status: "in_progress",
-            is_completed: false,
-          },
-        }),
-    });
-
+  it("blocks when no plan has been generated (no llm_input fired)", async () => {
     const { api, handlers } = createApi({
       enabled: true,
       apiKey: "ak_live_test",
-      userId: "user-duplicate",
-      agentId: "agent-duplicate",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
+      userId: "user-1",
+      agentId: "agent-1",
     });
     register(api as any);
 
-    const intentToken = {
-      plan: {
-        steps: [
-          {
-            action: "send_email",
-            params: { to: "alice@example.com" },
-            metadata: { inputs: { to: "alice@example.com" } },
-            mcp: "openclaw",
-          },
-          {
-            action: "send_email",
-            params: { to: "bob@example.com" },
-            metadata: { inputs: { to: "bob@example.com" } },
-            mcp: "openclaw",
-          },
-          {
-            action: "send_email",
-            params: { to: "charlie@example.com" },
-            metadata: { inputs: { to: "charlie@example.com" } },
-            mcp: "openclaw",
-          },
-        ],
-        metadata: { goal: "Send multiple emails" },
-      },
-      expiresAt: Date.now() / 1000 + 3600,
-      step_proofs: [
-        {
-          step_index: 0,
-          path: "/steps/[0]/action",
-          proof: [{ position: "left", sibling_hash: "hash_alice" }],
-          value_digest: "digest_alice",
-        },
-        {
-          step_index: 1,
-          path: "/steps/[1]/action",
-          proof: [{ position: "right", sibling_hash: "hash_bob" }],
-          value_digest: "digest_bob",
-        },
-        {
-          step_index: 2,
-          path: "/steps/[2]/action",
-          proof: [{ position: "left", sibling_hash: "hash_charlie" }],
-          value_digest: "digest_charlie",
-        },
-      ],
-    };
-
-    const ctx = {
-      ...createCtx("duplicate-tools-run"),
-      intentTokenRaw: JSON.stringify(intentToken),
-    };
-
+    const ctx = createCtx("run-no-plan");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
-      { toolName: "send_email", params: { to: "charlie@example.com" } },
+      { toolName: "send_email", params: {} },
       ctx,
     );
-
-    expect(result?.block).not.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const callBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body || "{}");
-    expect(callBody.path).toBe("/steps/[2]/action");
-    expect(callBody.step_index).toBe(2);
-    expect(callBody.proof).toEqual([{ position: "left", sibling_hash: "hash_charlie" }]);
-  });
-
-  it("DUPLICATE TOOLS: resolves proofs with step_path + step_index fields", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "true";
-    process.env.CSRG_VERIFY_ENABLED = "true";
-
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          allowed: true,
-          reason: "Step verified",
-          verification_source: "csrg",
-          step: { step_index: 2, action: "send_email", params: {} },
-          execution_state: {
-            plan_id: "plan-step-path",
-            intent_reference: "plan-step-path",
-            executed_steps: [0, 1],
-            current_step: 3,
-            total_steps: 3,
-            status: "in_progress",
-            is_completed: false,
-          },
-        }),
-    });
-
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-step-path",
-      agentId: "agent-step-path",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
-    });
-    register(api as any);
-
-    const intentToken = {
-      plan: {
-        steps: [
-          {
-            action: "send_email",
-            params: { to: "alice@example.com" },
-            mcp: "openclaw",
-          },
-          {
-            action: "send_email",
-            params: { to: "bob@example.com" },
-            mcp: "openclaw",
-          },
-          {
-            action: "send_email",
-            params: { to: "charlie@example.com" },
-            mcp: "openclaw",
-          },
-        ],
-        metadata: { goal: "Send multiple emails" },
-      },
-      expiresAt: Date.now() / 1000 + 3600,
-      step_proofs: [
-        {
-          step_index: 0,
-          step_path: "/steps/[0]/tool",
-          proof: [{ position: "left", sibling_hash: "hash_alice" }],
-          value_digest: "digest_alice",
-        },
-        {
-          step_index: 1,
-          step_path: "/steps/[1]/tool",
-          proof: [{ position: "right", sibling_hash: "hash_bob" }],
-          value_digest: "digest_bob",
-        },
-        {
-          step_index: 2,
-          step_path: "/steps/[2]/tool",
-          proof: [{ position: "left", sibling_hash: "hash_charlie" }],
-          value_digest: "digest_charlie",
-        },
-      ],
-    };
-
-    const ctx = {
-      ...createCtx("duplicate-step-path-run"),
-      intentTokenRaw: JSON.stringify(intentToken),
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.(
-      { toolName: "send_email", params: { to: "charlie@example.com" } },
-      ctx,
-    );
-
-    expect(result?.block).not.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const callBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body || "{}");
-    expect(callBody.path).toBe("/steps/[2]/tool");
-    expect(callBody.step_index).toBe(2);
-  });
-
-  it("DUPLICATE TOOLS: matches step.params when metadata.inputs is missing", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "true";
-    process.env.CSRG_VERIFY_ENABLED = "true";
-
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          allowed: true,
-          reason: "Step verified",
-          verification_source: "csrg",
-          step: { step_index: 1, action: "exec", params: {} },
-          execution_state: {
-            plan_id: "plan-step-params",
-            intent_reference: "plan-step-params",
-            executed_steps: [0],
-            current_step: 2,
-            total_steps: 2,
-            status: "in_progress",
-            is_completed: false,
-          },
-        }),
-    });
-
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-step-params",
-      agentId: "agent-step-params",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
-    });
-    register(api as any);
-
-    const intentToken = {
-      plan: {
-        steps: [
-          {
-            action: "exec",
-            params: { command: "date" },
-            mcp: "openclaw",
-          },
-          {
-            action: "exec",
-            params: { command: "uname -a" },
-            mcp: "openclaw",
-          },
-        ],
-        metadata: { goal: "Run two exec calls" },
-      },
-      expiresAt: Date.now() / 1000 + 3600,
-      step_proofs: [
-        {
-          step_index: 0,
-          path: "/steps/[0]/action",
-          proof: [{ position: "left", sibling_hash: "hash_date" }],
-          value_digest: "digest_date",
-        },
-        {
-          step_index: 1,
-          path: "/steps/[1]/action",
-          proof: [{ position: "right", sibling_hash: "hash_uname" }],
-          value_digest: "digest_uname",
-        },
-      ],
-    };
-
-    const ctx = {
-      ...createCtx("duplicate-step-params-run"),
-      intentTokenRaw: JSON.stringify(intentToken),
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.(
-      { toolName: "exec", params: { command: "uname -a" } },
-      ctx,
-    );
-
-    expect(result?.block).not.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const callBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body || "{}");
-    expect(callBody.path).toBe("/steps/[1]/action");
-    expect(callBody.step_index).toBe(1);
-  });
-
-  it("DUPLICATE TOOLS: advances through repeated identical tools in sequence", async () => {
-    process.env.REQUIRE_CSRG_PROOFS = "true";
-    process.env.CSRG_VERIFY_ENABLED = "true";
-
-    fetchMock.mockImplementation(async (_url: string, options: any) => {
-      const body = JSON.parse(options?.body || "{}");
-      return {
-        ok: true,
-        status: 200,
-        text: async () =>
-          JSON.stringify({
-            allowed: true,
-            reason: "Step verified",
-            verification_source: "csrg",
-            step: { step_index: body.step_index ?? 0, action: "send_email", params: {} },
-            execution_state: {
-              plan_id: "plan-ambiguous",
-              intent_reference: "plan-ambiguous",
-              executed_steps: [],
-              current_step: body.step_index ?? 0,
-              total_steps: 3,
-              status: "in_progress",
-              is_completed: false,
-            },
-          }),
-      };
-    });
-
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-ambiguous",
-      agentId: "agent-ambiguous",
-      backendEndpoint: "https://customer-iap.armoriq.ai",
-    });
-    register(api as any);
-
-    const intentToken = {
-      plan: {
-        steps: [
-          { action: "send_email", params: {}, mcp: "openclaw" },
-          { action: "send_email", params: {}, mcp: "openclaw" },
-          { action: "send_email", params: {}, mcp: "openclaw" },
-        ],
-        metadata: { goal: "Send multiple emails without distinct params" },
-      },
-      expiresAt: Date.now() / 1000 + 3600,
-      step_proofs: [
-        {
-          step_index: 0,
-          path: "/steps/[0]/action",
-          proof: [{ position: "left", sibling_hash: "hash_1" }],
-          value_digest: "digest_1",
-        },
-        {
-          step_index: 1,
-          path: "/steps/[1]/action",
-          proof: [{ position: "right", sibling_hash: "hash_2" }],
-          value_digest: "digest_2",
-        },
-        {
-          step_index: 2,
-          path: "/steps/[2]/action",
-          proof: [{ position: "left", sibling_hash: "hash_3" }],
-          value_digest: "digest_3",
-        },
-      ],
-    };
-
-    const ctx = {
-      ...createCtx("ambiguous-tools-run"),
-      intentTokenRaw: JSON.stringify(intentToken),
-    };
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result1 = await beforeToolCall?.({ toolName: "send_email", params: {} }, ctx);
-    const result2 = await beforeToolCall?.({ toolName: "send_email", params: {} }, ctx);
-    const result3 = await beforeToolCall?.({ toolName: "send_email", params: {} }, ctx);
-
-    expect(result1?.block).not.toBe(true);
-    expect(result2?.block).not.toBe(true);
-    expect(result3?.block).not.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-
-    const callBody1 = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body || "{}");
-    const callBody2 = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body || "{}");
-    const callBody3 = JSON.parse(fetchMock.mock.calls[2]?.[1]?.body || "{}");
-    expect(callBody1.path).toBe("/steps/[0]/action");
-    expect(callBody2.path).toBe("/steps/[1]/action");
-    expect(callBody3.path).toBe("/steps/[2]/action");
-    expect(callBody1.step_index).toBe(0);
-    expect(callBody2.step_index).toBe(1);
-    expect(callBody3.step_index).toBe(2);
-  });
-
-  it("NO CACHED PLAN: blocks when there is no cached plan and no intent token", async () => {
-    const { api, handlers } = createApi({
-      enabled: true,
-      apiKey: "ak_live_test",
-      userId: "user-no-plan",
-      agentId: "agent-no-plan",
-    });
-    register(api as any);
-
-    const ctx = createCtx("no-plan-run");
-
-    const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.({ toolName: "send_email", params: {} }, ctx);
 
     expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("ArmorIQ intent plan missing");
+    expect(result?.blockReason).toContain("intent plan missing");
   });
+
 });
+
