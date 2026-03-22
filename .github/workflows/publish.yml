@@ -27,7 +27,17 @@ jobs:
       - name: Build
         run: npm run build
       
+      - name: Determine npm dist-tag
+        id: dist-tag
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          if echo "$TAG_NAME" | grep -qE '^v2026\.2'; then
+            echo "tag=openclaw-2026.2" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --access public --tag "${{ steps.dist-tag.outputs.tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

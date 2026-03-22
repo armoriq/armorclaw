@@ -1,6 +1,6 @@
 {
   "name": "@armoriq/armorclaw",
-  "version": "0.0.1",
+  "version": "2026.2.0",
   "description": "ArmorClaw intent enforcement and security plugin for OpenClaw AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -27,7 +27,7 @@
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.2.0"
+    "openclaw": ">=2026.2.0 <2026.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
