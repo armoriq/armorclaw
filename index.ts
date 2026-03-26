@@ -1,5 +1,4 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { ArmorIQClient } from "@armoriq/sdk";
 import { completeSimple } from "@mariozechner/pi-ai";
@@ -63,12 +62,16 @@ type ToolContext = {
   senderUsername?: string;
   senderE164?: string;
   runId?: string;
-  model?: Model<Api> | null;
-  modelRegistry?: ModelRegistry | null;
-  intentTokenRaw?: string;
-  csrgPath?: string;
-  csrgProofRaw?: string;
-  csrgValueDigest?: string;
+};
+
+type SenderIdentityEntry = {
+  senderId?: string;
+  senderName?: string;
+  senderUsername?: string;
+  accountId?: string;
+  channel?: string;
+  conversationId?: string;
+  cachedAt: number;
 };
 
 type IdentityBundle = {
@@ -126,6 +129,8 @@ const clientCache = new Map<string, ArmorIQClient>();
 const planCache = new Map<string, PlanCacheEntry>();
 const sessionKeyIndex = new Map<string, string>();
 const contextTokenExecutionCache = new Map<string, ContextTokenExecutionEntry>();
+const senderIdentityCache = new Map<string, SenderIdentityEntry>();
+const planningPromises = new Map<string, Promise<void>>();
 
 function stringEnum<T extends readonly string[]>(
   values: T,
@@ -578,13 +583,33 @@ function isPolicyUpdateAllowed(
     : { allowed: false, reason: "ArmorIQ policy update denied", candidates };
 }
 
+function buildToolContextFromCaches(
+  nativeCtx: { agentId?: string; sessionKey?: string; sessionId?: string; runId?: string },
+): ToolContext {
+  const key = nativeCtx.sessionKey ?? nativeCtx.agentId ?? "";
+  const senderInfo = senderIdentityCache.get(key)
+    ?? (nativeCtx.sessionId ? senderIdentityCache.get(nativeCtx.sessionId) : undefined)
+    ?? (senderIdentityCache.size > 0 ? [...senderIdentityCache.values()].at(-1) : undefined);
+  return {
+    agentId: nativeCtx.agentId,
+    sessionKey: nativeCtx.sessionKey,
+    runId: nativeCtx.runId,
+    senderId: senderInfo?.senderId,
+    senderName: senderInfo?.senderName,
+    senderUsername: senderInfo?.senderUsername,
+    messageChannel: senderInfo?.channel,
+    accountId: senderInfo?.accountId,
+  };
+}
+
 function resolveUserId(cfg: ArmorIqConfig, ctx: ToolContext): string | undefined {
   if (cfg.userId) {
     return cfg.userId;
   }
   const source = cfg.userIdSource;
   if (source === "senderE164") {
-    return ctx.senderE164?.trim();
+    // senderE164 is not available in upstream OpenClaw hooks; fall back to senderId
+    return ctx.senderE164?.trim() || ctx.senderId?.trim();
   }
   if (source === "senderId") {
     return ctx.senderId?.trim();
@@ -667,7 +692,7 @@ function normalizeToolName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function parseCsrgProofHeaders(ctx: ToolContext): {
+function parseCsrgProofHeaders(ctx: Record<string, unknown>): {
   proofs?: CsrgProofHeaders;
   error?: string;
 } {
@@ -1195,11 +1220,43 @@ function isParamsAllowedByPlan(
   return true;
 }
 
+function parseToolsFromSystemPrompt(
+  systemPrompt?: string,
+): Array<{ name: string; description?: string }> {
+  if (!systemPrompt) return [];
+  const tools: Array<{ name: string; description?: string }> = [];
+
+  // Match tool definition blocks: "tool_name: description" or "- tool_name: description"
+  const linePattern = /^[-*]?\s*([a-z0-9_.:/-]+)\s*[:—–-]\s*(.+)/gim;
+  for (const match of systemPrompt.matchAll(linePattern)) {
+    const name = match[1]?.trim();
+    const description = match[2]?.trim();
+    if (name && name.length > 1 && name.length < 80) {
+      tools.push({ name, description });
+    }
+  }
+
+  // Match JSON function-calling format: { "name": "tool_name", ... "description": "..." }
+  const jsonPattern = /"name"\s*:\s*"([^"]+)"[^}]*?"description"\s*:\s*"([^"]+)"/g;
+  const seenNames = new Set(tools.map((t) => normalizeToolName(t.name)));
+  for (const match of systemPrompt.matchAll(jsonPattern)) {
+    const name = match[1]?.trim();
+    const description = match[2]?.trim();
+    if (name && !seenNames.has(normalizeToolName(name))) {
+      tools.push({ name, description });
+      seenNames.add(normalizeToolName(name));
+    }
+  }
+
+  return tools;
+}
+
 async function buildPlanFromPrompt(params: {
   prompt: string;
   tools?: Array<{ name: string; description?: string }>;
-  model?: Model<Api> | null;
-  modelRegistry?: ModelRegistry | null;
+  provider: string;
+  modelId: string;
+  apiKey: string;
   log: (message: string) => void;
 }): Promise<Record<string, unknown>> {
   const toolDescriptions = new Map<string, string>();
@@ -1209,13 +1266,6 @@ async function buildPlanFromPrompt(params: {
     if (name && description) {
       toolDescriptions.set(normalizeToolName(name), description);
     }
-  }
-  if (!params.model || !params.modelRegistry) {
-    throw new Error("Missing model context for planning");
-  }
-  const apiKey = await params.modelRegistry.getApiKey(params.model);
-  if (!apiKey) {
-    throw new Error("No API key available for planning model");
   }
 
   const toolList = buildToolList(params.tools);
@@ -1232,12 +1282,12 @@ async function buildPlanFromPrompt(params: {
     `User request:\n${params.prompt}\n\n` +
     `Return JSON with shape:\n` +
     `{\n  "steps": [ { "action": "tool_name", "mcp": "openclaw", "description": "...", "metadata": { } } ],\n  "metadata": { "goal": "..." }\n}\n`;
-  // TODO(armoriq): Include tool parameter schemas in the planning prompt when size allows.
 
-  params.log(`armoriq: planning with model ${params.model.provider}/${params.model.id}`);
+  params.log(`armoriq: planning with model ${params.provider}/${params.modelId}`);
 
+  const model = { provider: params.provider, id: params.modelId } as Model<Api>;
   const response = await completeSimple(
-    params.model as never,
+    model as never,
     {
       messages: [
         {
@@ -1248,7 +1298,7 @@ async function buildPlanFromPrompt(params: {
       ],
     },
     {
-      apiKey,
+      apiKey: params.apiKey,
       maxTokens: 512,
       temperature: 0.2,
     },
@@ -1712,96 +1762,124 @@ export default function register(api: OpenClawPluginApi) {
     logger: api.logger,
   });
 
-  api.on("before_agent_start", async (_event, _ctx) => {
-    const event = _event as typeof _event & { tools?: Array<{ name: string; description?: string; parameters?: Record<string, unknown> }> };
-    const ctx = _ctx as typeof _ctx & ToolContext;
-    const runKey = resolveRunKey(ctx as ToolContext);
-    api.logger.info(
-      `armoriq: [agent_start] runKey=${runKey} runId=${(ctx as ToolContext).runId} sessionKey=${(ctx as ToolContext).sessionKey}`,
-    );
-    if (!runKey) {
-      return cfg.policyUpdateEnabled ? { prependContext: POLICY_UPDATE_INSTRUCTIONS } : undefined;
-    }
-    if (planCache.has(runKey)) {
-      return cfg.policyUpdateEnabled ? { prependContext: POLICY_UPDATE_INSTRUCTIONS } : undefined;
-    }
+  // Cache sender identity from inbound messages
+  api.on("inbound_claim" as any, async (event: any) => {
+    const key = event.conversationId ?? event.senderId ?? "unknown";
+    senderIdentityCache.set(key, {
+      senderId: event.senderId,
+      senderName: event.senderName,
+      senderUsername: event.senderUsername,
+      accountId: event.accountId,
+      channel: event.channel,
+      conversationId: event.conversationId,
+      cachedAt: Date.now(),
+    });
+    api.logger.info(`armoriq: [inbound_claim] cached sender identity for key=${key}`);
+  });
 
-    const identity = resolveIdentities(cfg, ctx as ToolContext);
-    if (!identity) {
-      planCache.set(runKey, {
-        token: null,
-        plan: { steps: [], metadata: { goal: "invalid" } },
-        allowedActions: new Set(),
-        executedStepIndices: new Set(),
-        createdAt: Date.now(),
-        error: "ArmorIQ identity missing (userId/agentId)",
-      });
-      return cfg.policyUpdateEnabled ? { prependContext: POLICY_UPDATE_INSTRUCTIONS } : undefined;
-    }
+  // Inject policy update instructions into the system prompt
+  api.on("before_prompt_build" as any, async () => {
+    if (!cfg.policyUpdateEnabled) return undefined;
+    return { prependSystemContext: POLICY_UPDATE_INSTRUCTIONS };
+  });
 
-    try {
-      await policyReady;
-      const plan = await buildPlanFromPrompt({
-        prompt: event.prompt,
-        tools: event.tools,
-        model: ctx.model ?? null,
-        modelRegistry: ctx.modelRegistry ?? null,
-        log: (message) => api.logger.info(message),
-      });
-      const planRecord = plan as Record<string, unknown>;
-      const metadata = readRecord(planRecord.metadata);
-      const normalizedMetadata = metadata ?? {};
-      normalizedMetadata.policy_hash = policyStore.getPolicyHash();
-      normalizedMetadata.policy_version = policyStore.getState().version;
-      planRecord.metadata = normalizedMetadata;
+  // Generate intent plan when LLM input is prepared (fire-and-forget; awaited in before_tool_call)
+  api.on("llm_input" as any, async (event: any, _ctx: any) => {
+    const llmCtx: ToolContext = {
+      runId: event.runId,
+      sessionKey: _ctx?.sessionKey ?? event.sessionId,
+      agentId: _ctx?.agentId,
+    };
+    const runKey = resolveRunKey(llmCtx);
+    if (!runKey || planCache.has(runKey)) return;
 
-      const client = getClient(cfg, identity);
-      const planCapture = client.capturePlan("openclaw", event.prompt, plan, {
-        sessionKey: ctx.sessionKey,
-        messageChannel: ctx.messageChannel,
-        accountId: ctx.accountId,
-        senderId: ctx.senderId,
-        senderName: ctx.senderName,
-        senderUsername: ctx.senderUsername,
-        senderE164: ctx.senderE164,
-        runId: ctx.runId,
-      });
-      const token = await client.getIntentToken(planCapture, cfg.policy, cfg.validitySeconds);
-      const tokenRaw = JSON.stringify(token);
-      const tokenParsed = extractPlanFromIntentToken(tokenRaw);
-      const tokenPlan = tokenParsed?.plan ?? plan;
-      planCache.set(runKey, {
-        token,
-        tokenRaw,
-        tokenPlan,
-        plan: tokenPlan,
-        allowedActions: extractAllowedActions(tokenPlan),
-        executedStepIndices: new Set<number>(),
-        createdAt: Date.now(),
-        expiresAt:
-          typeof tokenParsed?.expiresAt === "number"
-            ? tokenParsed.expiresAt
-            : typeof token.expiresAt === "number"
-              ? token.expiresAt
-              : undefined,
-      });
-      const sessionKey = (ctx as ToolContext).sessionKey?.trim();
-      if (sessionKey && runKey !== sessionKey) {
-        sessionKeyIndex.set(sessionKey, runKey);
+    const planPromise = (async () => {
+      const toolCtx = buildToolContextFromCaches(llmCtx);
+      const identity = resolveIdentities(cfg, toolCtx);
+      if (!identity) {
+        planCache.set(runKey, {
+          token: null,
+          plan: { steps: [], metadata: { goal: "invalid" } },
+          allowedActions: new Set(),
+          executedStepIndices: new Set(),
+          createdAt: Date.now(),
+          error: "ArmorIQ identity missing (userId/agentId)",
+        });
+        return;
       }
-      return cfg.policyUpdateEnabled ? { prependContext: POLICY_UPDATE_INSTRUCTIONS } : undefined;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      planCache.set(runKey, {
-        token: null,
-        plan: { steps: [], metadata: { goal: "invalid" } },
-        allowedActions: new Set(),
-        executedStepIndices: new Set(),
-        createdAt: Date.now(),
-        error: `ArmorIQ planning failed: ${message}`,
-      });
-      return cfg.policyUpdateEnabled ? { prependContext: POLICY_UPDATE_INSTRUCTIONS } : undefined;
-    }
+
+      try {
+        await policyReady;
+        const tools = parseToolsFromSystemPrompt(event.systemPrompt);
+        const authResult = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
+          provider: event.provider,
+        });
+        const apiKey = typeof authResult === "string" ? authResult : authResult?.apiKey ?? authResult?.key;
+        if (!apiKey) {
+          throw new Error(`No API key available for provider ${event.provider}`);
+        }
+        const plan = await buildPlanFromPrompt({
+          prompt: event.prompt,
+          tools,
+          provider: event.provider,
+          modelId: event.model,
+          apiKey,
+          log: (message) => api.logger.info(message),
+        });
+        const planRecord = plan as Record<string, unknown>;
+        const metadata = readRecord(planRecord.metadata);
+        const normalizedMetadata = metadata ?? {};
+        normalizedMetadata.policy_hash = policyStore.getPolicyHash();
+        normalizedMetadata.policy_version = policyStore.getState().version;
+        planRecord.metadata = normalizedMetadata;
+
+        const client = getClient(cfg, identity);
+        const planCapture = client.capturePlan("openclaw", event.prompt, plan, {
+          sessionKey: toolCtx.sessionKey,
+          messageChannel: toolCtx.messageChannel,
+          accountId: toolCtx.accountId,
+          senderId: toolCtx.senderId,
+          senderName: toolCtx.senderName,
+          senderUsername: toolCtx.senderUsername,
+          runId: event.runId,
+        });
+        const token = await client.getIntentToken(planCapture, cfg.policy, cfg.validitySeconds);
+        const tokenRaw = JSON.stringify(token);
+        const tokenParsed = extractPlanFromIntentToken(tokenRaw);
+        const tokenPlan = tokenParsed?.plan ?? plan;
+        planCache.set(runKey, {
+          token,
+          tokenRaw,
+          tokenPlan,
+          plan: tokenPlan,
+          allowedActions: extractAllowedActions(tokenPlan),
+          executedStepIndices: new Set<number>(),
+          createdAt: Date.now(),
+          expiresAt:
+            typeof tokenParsed?.expiresAt === "number"
+              ? tokenParsed.expiresAt
+              : typeof token.expiresAt === "number"
+                ? token.expiresAt
+                : undefined,
+        });
+        const sessionId = event.sessionId?.trim();
+        if (sessionId && runKey !== sessionId) {
+          sessionKeyIndex.set(sessionId, runKey);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        planCache.set(runKey, {
+          token: null,
+          plan: { steps: [], metadata: { goal: "invalid" } },
+          allowedActions: new Set(),
+          executedStepIndices: new Set(),
+          createdAt: Date.now(),
+          error: `ArmorIQ planning failed: ${message}`,
+        });
+      }
+    })();
+
+    planningPromises.set(runKey, planPromise);
   });
 
   api.on("agent_end", async (_event, ctx) => {
@@ -1811,22 +1889,31 @@ export default function register(api: OpenClawPluginApi) {
       if (indexed) {
         planCache.delete(indexed);
         contextTokenExecutionCache.delete(indexed);
+        planningPromises.delete(indexed);
         sessionKeyIndex.delete(runKey);
       } else {
         planCache.delete(runKey);
         contextTokenExecutionCache.delete(runKey);
+        planningPromises.delete(runKey);
       }
     }
   });
 
   api.on("before_tool_call", async (event, ctx) => {
     const normalizedTool = normalizeToolName(event.toolName);
-    const toolCtx = ctx as ToolContext;
-    const intentTokenRaw = readString(toolCtx.intentTokenRaw);
+    const toolCtx = buildToolContextFromCaches(ctx);
     const runKey = resolveRunKey(toolCtx);
     api.logger.info(
       `armoriq: [tool_call] tool=${normalizedTool} runKey=${runKey} runId=${toolCtx.runId} sessionKey=${toolCtx.sessionKey} cacheKeys=[${[...planCache.keys()].join(",")}]`,
     );
+
+    // Await pending plan if llm_input planning is still in flight
+    const pending = planningPromises.get(runKey ?? "");
+    if (pending) {
+      try { await pending; } catch { /* errors are captured in planCache */ }
+      planningPromises.delete(runKey ?? "");
+    }
+
     const policyCheck = async (): Promise<{ block: true; blockReason: string } | null> => {
       if (normalizedTool === "policy_update") {
         return null;
@@ -1981,67 +2068,6 @@ export default function register(api: OpenClawPluginApi) {
       }
       return { block: false, stepIndex: resolvedStepIndex };
     };
-
-    if (intentTokenRaw) {
-      const contextUsedStepIndices = getContextTokenUsedStepIndices(runKey, intentTokenRaw);
-      const tokenCheck = checkIntentTokenPlan({
-        intentTokenRaw,
-        toolName: event.toolName,
-        toolParams: event.params,
-      });
-      if (tokenCheck.matched) {
-        api.logger.info(
-          `armoriq: plan check (context token) tool=${event.toolName} steps=${
-            Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
-          } status=${tokenCheck.blockReason ? "blocked" : "ok"}`,
-        );
-        if (tokenCheck.blockReason) {
-          return { block: true, blockReason: tokenCheck.blockReason };
-        }
-        const policyResult = await policyCheck();
-        if (policyResult) {
-          return policyResult;
-        }
-        const csrgResult = await verifyWithIap(
-          intentTokenRaw,
-          tokenCheck.plan ?? {},
-          contextUsedStepIndices,
-        );
-        if (csrgResult.block) {
-          return csrgResult;
-        }
-        if (typeof csrgResult.stepIndex === "number") {
-          contextUsedStepIndices?.add(csrgResult.stepIndex);
-        }
-        const resultParams = tokenCheck.params ?? event.params;
-        return resultParams ? { params: resultParams as Record<string, unknown> } : undefined;
-      }
-
-      const proofParse = parseCsrgProofHeaders(toolCtx);
-      if (proofParse.error) {
-        return { block: true, blockReason: proofParse.error };
-      }
-      const proofError = validateCsrgProofHeaders(
-        proofParse.proofs,
-        verificationService.csrgProofsRequired(),
-      );
-      if (proofError) {
-        return { block: true, blockReason: proofError };
-      }
-      const policyResult = await policyCheck();
-      if (policyResult) {
-        return policyResult;
-      }
-
-      const csrgResult = await verifyWithIap(intentTokenRaw, { steps: [] }, contextUsedStepIndices);
-      if (csrgResult.block) {
-        return csrgResult;
-      }
-      if (typeof csrgResult.stepIndex === "number") {
-        contextUsedStepIndices?.add(csrgResult.stepIndex);
-      }
-      return event.params ? { params: event.params } : undefined;
-    }
 
     if (!cfg.apiKey) {
       return { block: true, blockReason: "ArmorIQ API key missing" };

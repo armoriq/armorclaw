@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, v2026.2]
   pull_request:
-    branches: [main]
+    branches: [main, v2026.2]
 
 jobs:
   test:
@@ -20,7 +20,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
       
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       
       - name: Run tests
         run: npm test

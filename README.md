@@ -19,23 +19,21 @@ Intent-based security enforcement for OpenClaw AI agents. Protect your AI assist
 - ArmorIQ API key from [platform.armoriq.ai](https://platform.armoriq.ai)
 - OpenAI, Gemini, or OpenRouter API key
 
-### One-Command Install (Recommended)
-
-The ArmorClaw installer handles everything — clones OpenClaw, applies security patches, installs the plugin from npm, and writes your config:
-
-```bash
-curl -fsSL https://armoriq.ai/install-armorclaw.sh | bash
-```
-
-See the [Quick Start Guide](https://docs.armoriq.ai/docs/installation/quickstart) for full details on the interactive prompts.
-
-### Manual Install
-
-If you already have OpenClaw installed with ArmorClaw patches applied:
+### Install (OpenClaw 2026.3.x — no patching required)
 
 ```bash
 openclaw plugins install @armoriq/armorclaw
 ```
+
+### Install (OpenClaw 2026.2.x — requires patching)
+
+For older OpenClaw versions that need the ArmorClaw runtime patches:
+
+```bash
+npm install @armoriq/armorclaw@openclaw-2026.2
+```
+
+See the [Quick Start Guide](https://docs.armoriq.ai/docs/installation/quickstart) for details on applying patches for 2026.2.x.
 
 ### Verify
 
@@ -112,8 +110,9 @@ openclaw gateway restart
 
 ### 1. Intent Planning
 When you send a message to your OpenClaw agent, ArmorClaw:
-- Analyzes your prompt and available tools
-- Generates an explicit plan of allowed tool actions
+- Intercepts the LLM input via the `llm_input` hook
+- Parses available tools from the system prompt
+- Makes a separate LLM call to generate an explicit plan of allowed tool actions
 - Sends the plan to ArmorIQ IAP backend
 - Receives a cryptographically signed intent token
 
