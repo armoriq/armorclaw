@@ -1,4 +1,5 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
+import { getModel, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { ArmorIQClient } from "@armoriq/sdk";
 import { completeSimple } from "@mariozechner/pi-ai";
@@ -90,6 +91,12 @@ type PlanCacheEntry = {
   createdAt: number;
   expiresAt?: number;
   error?: string;
+  // DB plan UUID returned by POST /iap/sdk/token. Used to attach audit logs
+  // (block / success) to the correct plan row so the dashboard can roll up
+  // status and decision history per plan.
+  planId?: string;
+  // Raw JWT we can replay on follow-up audit calls without re-issuing.
+  jwtToken?: string;
 };
 
 type ContextTokenExecutionEntry = {
@@ -1285,7 +1292,49 @@ async function buildPlanFromPrompt(params: {
 
   params.log(`armoriq: planning with model ${params.provider}/${params.modelId}`);
 
-  const model = { provider: params.provider, id: params.modelId } as Model<Api>;
+  // Ensure pi-ai's built-in API providers (openai-responses, anthropic-messages,
+  // google-generative-ai, etc.) are registered. Called every time; the function
+  // is idempotent (safe to re-invoke). Without this, resolveApiProvider() returns
+  // undefined and completeSimple throws "No API provider registered for api: …".
+  try {
+    registerBuiltInApiProviders();
+  } catch {
+    /* ignore — registry may already be populated */
+  }
+
+  // Build a full Model descriptor. pi-ai requires api/baseUrl/contextWindow/etc.
+  // on top of provider+id — look them up from the built-in catalog.
+  let model: Model<Api>;
+  try {
+    // getModel is strictly typed over the generated MODELS catalog; at runtime
+    // we pass dynamic strings so go through `unknown` to keep tsc happy.
+    model = (getModel as unknown as (p: string, m: string) => Model<Api>)(
+      params.provider,
+      params.modelId,
+    );
+  } catch {
+    // Fallback: minimal descriptor that at least has the api field set so
+    // resolveApiProvider() can find the provider.
+    const apiByProvider: Record<string, Api> = {
+      openai: "openai-responses",
+      anthropic: "anthropic-messages",
+      google: "google-generative-ai",
+      "google-vertex": "google-vertex",
+      "azure-openai-responses": "azure-openai-responses",
+    };
+    model = {
+      id: params.modelId,
+      name: params.modelId,
+      api: apiByProvider[params.provider] ?? "openai-responses",
+      provider: params.provider,
+      baseUrl: "",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } as Model<Api>;
+  }
   const response = await completeSimple(
     model as never,
     {
@@ -1847,6 +1896,19 @@ export default function register(api: OpenClawPluginApi) {
         const tokenRaw = JSON.stringify(token);
         const tokenParsed = extractPlanFromIntentToken(tokenRaw);
         const tokenPlan = tokenParsed?.plan ?? plan;
+        // The /iap/sdk/token backend response includes plan_id + jwt_token.
+        // Newer SDKs may surface them on the returned token under various
+        // names; probe a few to stay forward-compatible.
+        const tokenAny = token as Record<string, unknown>;
+        const planId =
+          (typeof tokenAny.plan_id === "string" && tokenAny.plan_id) ||
+          (typeof tokenAny.planId === "string" && tokenAny.planId) ||
+          (typeof (tokenAny as any).planRecordId === "string" && (tokenAny as any).planRecordId) ||
+          undefined;
+        const jwtToken =
+          (typeof tokenAny.jwt_token === "string" && tokenAny.jwt_token) ||
+          (typeof tokenAny.jwtToken === "string" && tokenAny.jwtToken) ||
+          undefined;
         planCache.set(runKey, {
           token,
           tokenRaw,
@@ -1861,6 +1923,8 @@ export default function register(api: OpenClawPluginApi) {
               : typeof token.expiresAt === "number"
                 ? token.expiresAt
                 : undefined,
+          planId: planId || undefined,
+          jwtToken: jwtToken || undefined,
         });
         const sessionId = event.sessionId?.trim();
         if (sessionId && runKey !== sessionId) {
@@ -1868,6 +1932,15 @@ export default function register(api: OpenClawPluginApi) {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // Surface planning failures in the gateway log. Silent failure here
+        // means no plan/intent-token is ever created, which breaks the
+        // dashboard (no plan row, no audit chain). Log loudly.
+        api.logger.warn(
+          `armoriq: planning failed (runKey=${runKey}) — ${message}`,
+        );
+        if (err instanceof Error && err.stack) {
+          api.logger.warn(`armoriq: planning stack:\n${err.stack}`);
+        }
         planCache.set(runKey, {
           token: null,
           plan: { steps: [], metadata: { goal: "invalid" } },
@@ -1880,22 +1953,109 @@ export default function register(api: OpenClawPluginApi) {
     })();
 
     planningPromises.set(runKey, planPromise);
+    api.logger.info(
+      `armoriq: [llm_input] planning started runKey=${runKey} provider=${event.provider} model=${event.model}`,
+    );
   });
 
   api.on("agent_end", async (_event, ctx) => {
     const runKey = resolveRunKey(ctx as ToolContext);
-    if (runKey) {
-      const indexed = sessionKeyIndex.get(runKey);
-      if (indexed) {
-        planCache.delete(indexed);
-        contextTokenExecutionCache.delete(indexed);
-        planningPromises.delete(indexed);
-        sessionKeyIndex.delete(runKey);
-      } else {
-        planCache.delete(runKey);
-        contextTokenExecutionCache.delete(runKey);
-        planningPromises.delete(runKey);
+    if (!runKey) return;
+    const indexed = sessionKeyIndex.get(runKey);
+    const cacheKey = indexed ?? runKey;
+    const cached = planCache.get(cacheKey);
+
+    // Before evicting the plan from the cache, mark it complete on the backend
+    // so the dashboard row transitions from EXECUTING → COMPLETED. A plan can
+    // reach agent_end without any non-policy_update tool calls (pure chat, or
+    // policy-only turns); in those cases we'd otherwise leave the row active
+    // forever. Fire-and-forget; errors are logged and never block eviction.
+    if (cached && cached.planId && !cached.error) {
+      const token = cached.jwtToken ?? cached.tokenRaw ?? "";
+      const backendUrl =
+        cfg.backendEndpoint ??
+        process.env.BACKEND_ENDPOINT ??
+        "http://127.0.0.1:8081";
+      if (token) {
+        void fetch(`${backendUrl}/iap/plans/${cached.planId}/status`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            ...(cfg.apiKey ? { "X-API-Key": cfg.apiKey } : {}),
+          },
+          body: JSON.stringify({ status: "completed" }),
+        }).catch((err) => {
+          api.logger.warn(
+            `armoriq: plan complete-on-end failed (non-fatal): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
       }
+    }
+
+    if (indexed) {
+      planCache.delete(indexed);
+      contextTokenExecutionCache.delete(indexed);
+      planningPromises.delete(indexed);
+      sessionKeyIndex.delete(runKey);
+    } else {
+      planCache.delete(runKey);
+      contextTokenExecutionCache.delete(runKey);
+      planningPromises.delete(runKey);
+    }
+  });
+
+  // ── audit-on-success ────────────────────────────────────────────────────
+  // Fire-and-forget audit log for every tool that actually executed (so the
+  // backend's /iap/audit handler can flip the parent plan to "completed" once
+  // all steps succeed). policy_update is internal — skip it.
+  api.on("after_tool_call", async (event, ctx) => {
+    try {
+      const normalized = normalizeToolName(event.toolName);
+      if (normalized === "policy_update") return;
+      const runKey = resolveRunKey(ctx as ToolContext);
+      if (!runKey) return;
+      const cached =
+        planCache.get(runKey) ??
+        planCache.get(sessionKeyIndex.get(runKey) ?? "");
+      if (!cached) return;
+      const token = cached.jwtToken ?? cached.tokenRaw ?? "";
+      if (!token) return;
+      const isError = typeof event.error === "string" && event.error.length > 0;
+      void verificationService
+        .createAuditLog({
+          token,
+          plan_id: cached.planId,
+          step_index: 0,
+          action: "tool_call",
+          tool: event.toolName,
+          input: sanitizeParams(
+            isPlainObject(event.params)
+              ? (event.params as Record<string, unknown>)
+              : {},
+            cfg,
+          ),
+          output: isError ? null : (event.result ?? null),
+          status: isError ? "failed" : "success",
+          error_message: isError ? event.error : undefined,
+          duration_ms: event.durationMs ?? 0,
+          executed_at: new Date().toISOString(),
+        })
+        .catch((auditErr) => {
+          api.logger.warn(
+            `armoriq: audit-on-success failed (non-fatal): ${
+              auditErr instanceof Error ? auditErr.message : String(auditErr)
+            }`,
+          );
+        });
+    } catch (err) {
+      api.logger.warn(
+        `armoriq: after_tool_call hook errored: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   });
 
@@ -1959,6 +2119,35 @@ export default function register(api: OpenClawPluginApi) {
             toolCtx.senderUsername ?? "",
           )}`,
         );
+        // Fire-and-forget audit so the dashboard records the block. We don't
+        // await — the deny path must remain fast and never fail because the
+        // audit endpoint blipped.
+        const cachedForBlock = planCache.get(runKey ?? "");
+        const blockToken =
+          cachedForBlock?.jwtToken ?? cachedForBlock?.tokenRaw ?? "";
+        if (blockToken) {
+          void verificationService
+            .createAuditLog({
+              token: blockToken,
+              plan_id: cachedForBlock?.planId,
+              step_index: 0,
+              action: "policy_deny",
+              tool: event.toolName,
+              input: sanitized,
+              output: null,
+              status: "failed",
+              error_message: `policy_deny: ${decision.matchedRule?.id ?? "unknown"}`,
+              duration_ms: 0,
+              executed_at: new Date().toISOString(),
+            })
+            .catch((auditErr) => {
+              api.logger.warn(
+                `armoriq: audit-on-block failed (non-fatal): ${
+                  auditErr instanceof Error ? auditErr.message : String(auditErr)
+                }`,
+              );
+            });
+        }
         return {
           block: true,
           blockReason: decision.reason ?? "ArmorIQ policy denied",

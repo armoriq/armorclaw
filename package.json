@@ -17,10 +17,11 @@
     "test": "vitest",
     "test:watch": "vitest --watch",
     "prepublishOnly": "npm run build",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "build:install": "tsc && rm -rf /Users/arunkumarv/.openclaw/extensions/armorclaw/dist && cp -R dist /Users/arunkumarv/.openclaw/extensions/armorclaw/dist"
   },
   "dependencies": {
-    "@armoriq/sdk": "^0.2.6",
+    "@armoriq/sdk": "file:../armoriq-sdk-customer-ts",
     "@mariozechner/pi-ai": "^0.52.9",
     "@mariozechner/pi-coding-agent": "^0.52.9",
     "@sinclair/typebox": "^0.34.48",
