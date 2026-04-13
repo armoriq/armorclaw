@@ -1369,8 +1369,27 @@ async function buildPlanFromPrompt(params: {
     throw new Error("Planner returned empty response");
   }
 
+  // Strip Markdown code-fence wrappers some providers emit around JSON
+  // (Gemini emits ```json ... ```; Claude/OpenAI sometimes do too despite
+  // "respond with JSON only" instructions). Order of attempts:
+  //   1. Fenced block with optional `json` tag
+  //   2. First {...} brace-balanced substring in the text
+  //   3. Raw text as-is
+  const extractJson = (raw: string): string => {
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced && fenced[1]) return fenced[1].trim();
+    const firstBrace = raw.indexOf("{");
+    const lastBrace = raw.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return raw.slice(firstBrace, lastBrace + 1).trim();
+    }
+    return raw;
+  };
+
+  const jsonText = extractJson(text);
+
   try {
-    const parsed = JSON.parse(text) as { steps?: unknown[]; metadata?: Record<string, unknown> };
+    const parsed = JSON.parse(jsonText) as { steps?: unknown[]; metadata?: Record<string, unknown> };
     if (!parsed.steps || !Array.isArray(parsed.steps)) {
       parsed.steps = [];
     }
