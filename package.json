@@ -1,6 +1,6 @@
 {
   "name": "@armoriq/armorclaw",
-  "version": "2026.4.1",
+  "version": "2026.4.2",
   "description": "ArmorClaw intent enforcement and security plugin for OpenClaw AI agents",
   "type": "module",
   "main": "dist/index.js",
