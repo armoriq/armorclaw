@@ -123,7 +123,7 @@ Edit `~/.openclaw/openclaw.json` and add under `plugins.entries`:
           "contextId": "default",
           "policyUpdateEnabled": true,
           "policyUpdateAllowList": ["5929428080", "akv2011"],
-          "policyStorePath": "/Users/arunkumarv/.openclaw/armoriq.policy.json"
+          "policyStorePath": "~/.openclaw/armoriq.policy.json"
         }
       }
     }
