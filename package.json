@@ -1,6 +1,6 @@
 {
   "name": "@armoriq/armorclaw",
-  "version": "2026.3.0",
+  "version": "2026.4.1",
   "description": "ArmorClaw intent enforcement and security plugin for OpenClaw AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -18,10 +18,10 @@
     "test:watch": "vitest --watch",
     "prepublishOnly": "npm run build",
     "clean": "rm -rf dist",
-    "build:install": "tsc && rm -rf /Users/arunkumarv/.openclaw/extensions/armorclaw/dist && cp -R dist /Users/arunkumarv/.openclaw/extensions/armorclaw/dist"
+    "build:install": "tsc && OPENCLAW_EXT_DIR=\"${OPENCLAW_EXT_DIR:-$HOME/.openclaw/extensions/armorclaw}\" && rm -rf \"$OPENCLAW_EXT_DIR/dist\" && mkdir -p \"$OPENCLAW_EXT_DIR\" && cp -R dist \"$OPENCLAW_EXT_DIR/dist\""
   },
   "dependencies": {
-    "@armoriq/sdk": "file:../armoriq-sdk-customer-ts",
+    "@armoriq/sdk": "^0.2.12",
     "@mariozechner/pi-ai": "^0.52.9",
     "@mariozechner/pi-coding-agent": "^0.52.9",
     "@sinclair/typebox": "^0.34.48",
