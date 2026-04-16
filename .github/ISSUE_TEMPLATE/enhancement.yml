@@ -1,0 +1,56 @@
+name: Enhancement
+description: Suggest an improvement to an existing feature
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest how we can improve something that already exists.
+
+  - type: dropdown
+    id: service
+    attributes:
+      label: Affected Service / Component
+      options:
+        - Backend
+        - Frontend
+        - Proxy Server
+        - SDK (TypeScript)
+        - SDK (Python)
+        - OPA / Policy Engine
+        - CSRG
+        - Agent
+        - Admin Dashboard
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      placeholder: Describe how the feature currently works.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed improvement
+      placeholder: Describe the change you'd like and why it's better.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: Links, screenshots, related issues, or anything else that helps.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched for existing issues before creating this one.
+          required: true
