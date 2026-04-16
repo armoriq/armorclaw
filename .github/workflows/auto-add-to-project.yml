@@ -6,10 +6,28 @@ on:
 
 jobs:
   add-to-project:
-    name: Add issue to project
+    name: Add issue to ArmorIQ project board
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/add-to-project@v1.0.2
+      - name: Add to project
+        uses: actions/add-to-project@v1.0.2
+        id: add
         with:
           project-url: https://github.com/orgs/armoriq/projects/1
           github-token: ${{ secrets.ADD_TO_PROJECT_TOKEN }}
+
+      - name: Set status to Backlog
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_TOKEN }}
+        run: |
+          gh api graphql -f query='
+            mutation {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: "PVT_kwDODhptWM4BKTiz"
+                itemId: "'"${{ steps.add.outputs.itemId }}"'"
+                fieldId: "PVTSSF_lADODhptWM4BKTizzg6NlW4"
+                value: { singleSelectOptionId: "f75ad846" }
+              }) {
+                projectV2Item { id }
+              }
+            }'
