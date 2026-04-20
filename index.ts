@@ -1371,55 +1371,74 @@ async function buildPlanFromPrompt(params: {
 
   // Strip Markdown code-fence wrappers some providers emit around JSON
   // (Gemini emits ```json ... ```; Claude/OpenAI sometimes do too despite
-  // "respond with JSON only" instructions). Order of attempts:
-  //   1. Fenced block with optional `json` tag
-  //   2. First {...} brace-balanced substring in the text
-  //   3. Raw text as-is
-  const extractJson = (raw: string): string => {
-    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenced && fenced[1]) return fenced[1].trim();
-    const firstBrace = raw.indexOf("{");
-    const lastBrace = raw.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      return raw.slice(firstBrace, lastBrace + 1).trim();
-    }
-    return raw;
-  };
+  // "respond with JSON only" instructions). Try several extraction strategies
+  // and return the first one that parses as JSON — providers are inconsistent
+  // (truncated streams, stray prose before/after, missing closing fence).
+  const candidates: string[] = [];
+  const fencedClosed = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedClosed && fencedClosed[1]) candidates.push(fencedClosed[1].trim());
+  const fencedOpen = text.match(/```(?:json)?\s*([\s\S]*)$/i);
+  if (fencedOpen && fencedOpen[1]) {
+    candidates.push(fencedOpen[1].replace(/```\s*$/, "").trim());
+  }
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(text.slice(firstBrace, lastBrace + 1).trim());
+  }
+  candidates.push(text.trim());
 
-  const jsonText = extractJson(text);
-
-  try {
-    const parsed = JSON.parse(jsonText) as { steps?: unknown[]; metadata?: Record<string, unknown> };
-    if (!parsed.steps || !Array.isArray(parsed.steps)) {
-      parsed.steps = [];
-    }
-    if (!parsed.metadata || typeof parsed.metadata !== "object" || Array.isArray(parsed.metadata)) {
-      parsed.metadata = { goal: params.prompt };
-    }
-    for (const step of parsed.steps as Record<string, unknown>[]) {
-      if (!step || typeof step !== "object") {
+  let parsed: { steps?: unknown[]; metadata?: Record<string, unknown> } | undefined;
+  let lastErr: unknown;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const value: unknown = JSON.parse(candidate);
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        lastErr = new Error("Planner response must be a JSON object");
         continue;
       }
-      const stepObj = step as Record<string, unknown>;
-      if (!stepObj.action && typeof stepObj.tool === "string") {
-        stepObj.action = stepObj.tool;
-      }
-      if (!stepObj.mcp || typeof stepObj.mcp !== "string") {
-        stepObj.mcp = "openclaw";
-      }
-      if (!stepObj.description && typeof stepObj.action === "string") {
-        const description = toolDescriptions.get(normalizeToolName(stepObj.action));
-        if (description) {
-          stepObj.description = description;
-        }
+      parsed = value as { steps?: unknown[]; metadata?: Record<string, unknown> };
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (!parsed) {
+    const base = `Planner returned invalid JSON: ${lastErr instanceof Error ? lastErr.message : lastErr}`;
+    const msg =
+      process.env.ARMORCLAW_DEBUG_PLANNER === "1"
+        ? `${base} | preview="${text.slice(0, 400).replace(/\n/g, "\\n")}"`
+        : base;
+    throw new Error(msg, { cause: lastErr });
+  }
+
+  if (!parsed.steps || !Array.isArray(parsed.steps)) {
+    parsed.steps = [];
+  }
+  if (!parsed.metadata || typeof parsed.metadata !== "object" || Array.isArray(parsed.metadata)) {
+    parsed.metadata = { goal: params.prompt };
+  }
+  for (const step of parsed.steps as Record<string, unknown>[]) {
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+    const stepObj = step as Record<string, unknown>;
+    if (!stepObj.action && typeof stepObj.tool === "string") {
+      stepObj.action = stepObj.tool;
+    }
+    if (!stepObj.mcp || typeof stepObj.mcp !== "string") {
+      stepObj.mcp = "openclaw";
+    }
+    if (!stepObj.description && typeof stepObj.action === "string") {
+      const description = toolDescriptions.get(normalizeToolName(stepObj.action));
+      if (description) {
+        stepObj.description = description;
       }
     }
-    return parsed;
-  } catch (err) {
-    throw new Error(`Planner returned invalid JSON: ${err instanceof Error ? err.message : err}`, {
-      cause: err,
-    });
   }
+  return parsed;
 }
 
 function buildClientKey(cfg: ArmorIqConfig, ids: IdentityBundle): string {

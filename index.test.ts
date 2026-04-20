@@ -489,5 +489,98 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("intent plan missing");
   });
 
+  describe("planner response extraction", () => {
+    const validPlan = {
+      steps: [{ action: "read", mcp: "openclaw" }],
+      metadata: { goal: "read" },
+    };
+
+    const setupAndFire = async (plannerText: string, runId: string) => {
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+      });
+      register(api as any);
+      completeSimpleMock.mockResolvedValue({ content: plannerText });
+      await fireInboundClaim(handlers);
+      await fireLlmInput(handlers, runId, "Read a file", "- read: Read files");
+      const beforeToolCall = handlers.get("before_tool_call")?.[0];
+      return await beforeToolCall?.({ toolName: "read", params: { path: "x.txt" } }, createCtx(runId));
+    };
+
+    it("parses Gemini-style closed ```json fenced response", async () => {
+      const result = await setupAndFire("```json\n" + JSON.stringify(validPlan) + "\n```", "run-fenced");
+      expect(result?.block).not.toBe(true);
+    });
+
+    it("parses truncated/unclosed fenced response", async () => {
+      const result = await setupAndFire("```json\n" + JSON.stringify(validPlan), "run-unclosed");
+      expect(result?.block).not.toBe(true);
+    });
+
+    it("parses JSON surrounded by prose via brace-slice", async () => {
+      const text = `Sure, here you go:\n${JSON.stringify(validPlan)}\nHope this helps!`;
+      const result = await setupAndFire(text, "run-prose");
+      expect(result?.block).not.toBe(true);
+    });
+
+    it("parses raw JSON without any wrapping", async () => {
+      const result = await setupAndFire(JSON.stringify(validPlan), "run-raw");
+      expect(result?.block).not.toBe(true);
+    });
+
+    it("type-guard rejects bare string (no plan captured, tool blocked)", async () => {
+      const result = await setupAndFire('"just a string"', "run-bare-string");
+      expect(result?.block).toBe(true);
+    });
+
+    it("type-guard rejects bare array (no plan captured, tool blocked)", async () => {
+      const result = await setupAndFire("[1,2,3]", "run-bare-array");
+      expect(result?.block).toBe(true);
+    });
+
+    it("planner error excludes raw preview by default", async () => {
+      delete process.env.ARMORCLAW_DEBUG_PLANNER;
+      completeSimpleMock.mockResolvedValue({ content: "not json at all" });
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+      });
+      register(api as any);
+      await fireInboundClaim(handlers);
+      await fireLlmInput(handlers, "run-no-preview", "Read a file", "- read: Read files");
+      const warnCalls = (api.logger.warn as any).mock.calls.map((c: unknown[]) => String(c[0]));
+      const plannerWarn = warnCalls.find((m: string) => m.includes("planning failed"));
+      expect(plannerWarn).toBeDefined();
+      expect(plannerWarn).toContain("Planner returned invalid JSON");
+      expect(plannerWarn).not.toContain('preview="');
+    });
+
+    it("planner error includes preview when ARMORCLAW_DEBUG_PLANNER=1", async () => {
+      process.env.ARMORCLAW_DEBUG_PLANNER = "1";
+      completeSimpleMock.mockResolvedValue({ content: "not json at all" });
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+      });
+      register(api as any);
+      try {
+        await fireInboundClaim(handlers);
+        await fireLlmInput(handlers, "run-preview", "Read a file", "- read: Read files");
+      } finally {
+        delete process.env.ARMORCLAW_DEBUG_PLANNER;
+      }
+      const warnCalls = (api.logger.warn as any).mock.calls.map((c: unknown[]) => String(c[0]));
+      const plannerWarn = warnCalls.find((m: string) => m.includes("planning failed"));
+      expect(plannerWarn).toBeDefined();
+      expect(plannerWarn).toContain('preview="not json at all"');
+    });
+  });
 });
 
