@@ -13,6 +13,12 @@ Intent-based security enforcement for OpenClaw AI agents. Protect your AI assist
 
 ## Installation
 
+The recommended path is the one-line installer, which clones OpenClaw, installs the plugin, and writes a working config:
+
+```bash
+curl -fsSL https://armoriq.ai/install-armorclaw.sh | bash
+```
+
 ### Prerequisites
 
 - Node.js v22+, pnpm, Git
@@ -91,7 +97,8 @@ All options live under `plugins.entries.armorclaw.config`:
 | `policyUpdateAllowList` | No | User IDs permitted to manage policies |
 | `policy` | No | Local policy rules (allow/deny) |
 | `policyStorePath` | No | Path to policy store file |
-| `iapEndpoint` | No | CSRG / IAP endpoint (default: `https://customer-iap.armoriq.ai`) |
+| `iapEndpoint` | No | IAP endpoint (no default; also reads `IAP_ENDPOINT`) |
+| `csrgEndpoint` | No | CSRG endpoint (default: `https://customer-iap.armoriq.ai`; also reads `CSRG_URL`) |
 | `backendEndpoint` | No | Backend API — `https://armorclaw-api.armoriq.ai` for `ak_claw_*`, `https://api.armoriq.ai` for `ak_live_*` |
 | `proxyEndpoint` | No | Only required for `ak_live_*` (default: `https://proxy.armoriq.ai`) |
 

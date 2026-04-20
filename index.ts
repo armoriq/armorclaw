@@ -1393,7 +1393,12 @@ async function buildPlanFromPrompt(params: {
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
-      parsed = JSON.parse(candidate) as { steps?: unknown[]; metadata?: Record<string, unknown> };
+      const value: unknown = JSON.parse(candidate);
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        lastErr = new Error("Planner response must be a JSON object");
+        continue;
+      }
+      parsed = value as { steps?: unknown[]; metadata?: Record<string, unknown> };
       break;
     } catch (err) {
       lastErr = err;
