@@ -13,27 +13,27 @@ Intent-based security enforcement for OpenClaw AI agents. Protect your AI assist
 
 ## Installation
 
-The recommended path is the one-line installer, which clones OpenClaw, installs the plugin, and writes a working config:
-
-```bash
-curl -fsSL https://armoriq.ai/install-armorclaw.sh | bash
-```
-
 ### Prerequisites
 
 - Node.js v22+, pnpm, Git
 - ArmorClaw API key from [claw.armoriq.ai](https://claw.armoriq.ai)
 - An LLM provider key (OpenAI, Anthropic, Gemini, or OpenRouter)
 
-### Manual install (OpenClaw v2026.4.x)
-
-OpenClaw v2026.4 ships a strict plugin scanner that flags any plugin that reads `process.env` and makes HTTP calls. ArmorClaw legitimately does both — that is its job — so the install requires the explicit unsafe-install flag:
+### Install (OpenClaw 2026.3.x — no patching required)
 
 ```bash
-openclaw plugins install --dangerously-force-unsafe-install --force @armoriq/armorclaw
+openclaw plugins install @armoriq/armorclaw
 ```
 
-> Older OpenClaw versions (≤ 2026.3.x) needed runtime patches and are no longer supported by this plugin. Upgrade OpenClaw to v2026.4.x.
+### Install (OpenClaw 2026.2.x — requires patching)
+
+For older OpenClaw versions that need the ArmorClaw runtime patches:
+
+```bash
+npm install @armoriq/armorclaw@openclaw-2026.2
+```
+
+See the [Quick Start Guide](https://docs.armoriq.ai/docs/installation/quickstart) for details on applying patches for 2026.2.x.
 
 ### Verify
 
@@ -95,9 +95,9 @@ All options live under `plugins.entries.armorclaw.config`:
 | `backendEndpoint` | No | Backend API — `https://armorclaw-api.armoriq.ai` for `ak_claw_*`, `https://api.armoriq.ai` for `ak_live_*` |
 | `proxyEndpoint` | No | Only required for `ak_live_*` (default: `https://proxy.armoriq.ai`) |
 
-### LLM credentials (OpenClaw v2026.4)
+### LLM credentials (OpenClaw 2026.3.x)
 
-OpenClaw v2026.4 reads provider credentials from `~/.openclaw/agents/main/agent/auth-profiles.json`, **not** from environment variables. The installer creates this file. Manual example:
+OpenClaw 2026.3.x reads provider credentials from `~/.openclaw/agents/main/agent/auth-profiles.json` via `api.runtime.modelAuth`, **not** from environment variables. The installer creates this file. Manual example:
 
 ```json
 {
@@ -197,14 +197,6 @@ This provides tamper-proof verification that each tool execution matches the ori
 openclaw plugins list
 openclaw plugins info armorclaw
 ls -la ~/.openclaw/extensions/armorclaw/
-```
-
-### Install blocked: "credential harvesting" / "env-harvesting"
-
-OpenClaw v2026.4's static scanner blocks plugins that read env vars and make HTTP calls. ArmorClaw needs both. Re-run with:
-
-```bash
-openclaw plugins install --dangerously-force-unsafe-install --force @armoriq/armorclaw
 ```
 
 ### Stale `armorclaw.bak.*` directories cause "duplicate plugin id"
