@@ -1406,11 +1406,12 @@ async function buildPlanFromPrompt(params: {
   }
 
   if (!parsed) {
-    const preview = text.slice(0, 400).replace(/\n/g, "\\n");
-    throw new Error(
-      `Planner returned invalid JSON: ${lastErr instanceof Error ? lastErr.message : lastErr} | preview="${preview}"`,
-      { cause: lastErr },
-    );
+    const base = `Planner returned invalid JSON: ${lastErr instanceof Error ? lastErr.message : lastErr}`;
+    const msg =
+      process.env.ARMORCLAW_DEBUG_PLANNER === "1"
+        ? `${base} | preview="${text.slice(0, 400).replace(/\n/g, "\\n")}"`
+        : base;
+    throw new Error(msg, { cause: lastErr });
   }
 
   if (!parsed.steps || !Array.isArray(parsed.steps)) {
