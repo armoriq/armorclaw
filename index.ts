@@ -105,7 +105,7 @@ type ContextTokenExecutionEntry = {
   updatedAt: number;
 };
 
-const DEFAULT_VALIDITY_SECONDS = 60;
+const DEFAULT_VALIDITY_SECONDS = 6000;
 const DEFAULT_MAX_PARAM_CHARS = 2000;
 const DEFAULT_MAX_PARAM_DEPTH = 4;
 const DEFAULT_MAX_PARAM_KEYS = 50;
