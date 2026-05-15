@@ -1,4 +1,3 @@
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 type PlanStep = {
@@ -50,7 +49,7 @@ function createMockPlanCache(plan: Plan, expiresInSeconds = 60): PlanCacheEntry 
 
 function simulateBeforeToolCall(
   cached: PlanCacheEntry | undefined,
-  toolName: string,
+  toolName: string
 ): { blocked: boolean; reason?: string } {
   if (!cached) {
     return {
@@ -88,9 +87,7 @@ describe("ArmorIQ Intent Enforcement", () => {
   describe("Tool Allowlist Enforcement", () => {
     it("should ALLOW tool that IS in the plan", () => {
       const plan: Plan = {
-        steps: [
-          { action: "list_dir", mcp: "openclaw", description: "List files" },
-        ],
+        steps: [{ action: "list_dir", mcp: "openclaw", description: "List files" }],
         metadata: { goal: "List directory contents" },
       };
 
@@ -103,9 +100,7 @@ describe("ArmorIQ Intent Enforcement", () => {
 
     it("should BLOCK tool that is NOT in the plan (intent drift)", () => {
       const plan: Plan = {
-        steps: [
-          { action: "list_dir", mcp: "openclaw", description: "List files" },
-        ],
+        steps: [{ action: "list_dir", mcp: "openclaw", description: "List files" }],
         metadata: { goal: "List directory contents" },
       };
 
@@ -119,16 +114,14 @@ describe("ArmorIQ Intent Enforcement", () => {
 
     it("should BLOCK dangerous tool when plan only has safe tool", () => {
       const plan: Plan = {
-        steps: [
-          { action: "read_file", mcp: "openclaw", description: "Read a file" },
-        ],
+        steps: [{ action: "read_file", mcp: "openclaw", description: "Read a file" }],
         metadata: { goal: "Read configuration" },
       };
 
       const cached = createMockPlanCache(plan);
-      
+
       const dangerousTools = ["bash", "exec", "delete_file", "rm", "sudo"];
-      
+
       for (const tool of dangerousTools) {
         const result = simulateBeforeToolCall(cached, tool);
         expect(result.blocked).toBe(true);
@@ -138,14 +131,12 @@ describe("ArmorIQ Intent Enforcement", () => {
 
     it("should handle case-insensitive tool names", () => {
       const plan: Plan = {
-        steps: [
-          { action: "List_Dir", mcp: "openclaw" },
-        ],
+        steps: [{ action: "List_Dir", mcp: "openclaw" }],
         metadata: { goal: "List files" },
       };
 
       const cached = createMockPlanCache(plan);
-      
+
       expect(simulateBeforeToolCall(cached, "list_dir").blocked).toBe(false);
       expect(simulateBeforeToolCall(cached, "LIST_DIR").blocked).toBe(false);
       expect(simulateBeforeToolCall(cached, "List_Dir").blocked).toBe(false);
@@ -241,7 +232,7 @@ describe("ArmorIQ Intent Enforcement", () => {
     function resolveRunKey(ctx: { runId?: string; sessionKey?: string }): string | null {
       const runId = ctx.runId?.trim();
       const sessionKey = ctx.sessionKey?.trim();
-      
+
       if (runId) {
         if (sessionKey && sessionKey !== runId) {
           return `${sessionKey}::${runId}`;
@@ -307,22 +298,13 @@ describe("ArmorIQ Intent Drift Attack Scenarios", () => {
   describe("Prompt Injection Attack", () => {
     it("should BLOCK agent trying to escape plan via prompt injection", () => {
       const plan: Plan = {
-        steps: [
-          { action: "list_dir", mcp: "openclaw", description: "List home directory" },
-        ],
+        steps: [{ action: "list_dir", mcp: "openclaw", description: "List home directory" }],
         metadata: { goal: "Show files in home" },
       };
 
       const cached = createMockPlanCache(plan);
 
-      const attackTools = [
-        "bash",
-        "exec",
-        "run_command",
-        "shell",
-        "eval",
-        "system",
-      ];
+      const attackTools = ["bash", "exec", "run_command", "shell", "eval", "system"];
 
       for (const tool of attackTools) {
         const result = simulateBeforeToolCall(cached, tool);
@@ -335,9 +317,7 @@ describe("ArmorIQ Intent Drift Attack Scenarios", () => {
   describe("Privilege Escalation Attack", () => {
     it("should BLOCK read_file when plan only allows list_dir", () => {
       const plan: Plan = {
-        steps: [
-          { action: "list_dir", mcp: "openclaw" },
-        ],
+        steps: [{ action: "list_dir", mcp: "openclaw" }],
         metadata: { goal: "List files only" },
       };
 
@@ -349,9 +329,7 @@ describe("ArmorIQ Intent Drift Attack Scenarios", () => {
 
     it("should BLOCK write_file when plan only allows read_file", () => {
       const plan: Plan = {
-        steps: [
-          { action: "read_file", mcp: "openclaw" },
-        ],
+        steps: [{ action: "read_file", mcp: "openclaw" }],
         metadata: { goal: "Read only" },
       };
 

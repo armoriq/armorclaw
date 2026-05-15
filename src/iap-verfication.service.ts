@@ -128,7 +128,7 @@ function createLogger(logger?: LoggerLike): Required<LoggerLike> {
 async function postJson<T>(
   url: string,
   payload: Record<string, unknown>,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<JsonResponse<T>> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -183,7 +183,7 @@ export class IAPVerificationService {
 
     if (!options.iapBaseUrl && this.iapBaseUrl.includes("localhost")) {
       this.logger.warn(
-        `IAP_BACKEND_URL not set; defaulting to local backend at ${this.iapBaseUrl}`,
+        `IAP_BACKEND_URL not set; defaulting to local backend at ${this.iapBaseUrl}`
       );
     }
     this.logger.info(`IAP Verification Service initialized - Base URL: ${this.iapBaseUrl}`);
@@ -202,7 +202,7 @@ export class IAPVerificationService {
   async verifyStep(
     token: string,
     csrgProofs?: CsrgProofHeaders,
-    toolName?: string,
+    toolName?: string
   ): Promise<VerifyStepResponse> {
     this.logger.debug("Calling IAP verify-step endpoint...");
 
@@ -231,12 +231,12 @@ export class IAPVerificationService {
     const response = await postJson<VerifyStepResponse>(
       `${this.iapBaseUrl}/iap/verify-step`,
       payload,
-      this.timeoutMs,
+      this.timeoutMs
     );
 
     if (response.ok && response.data) {
       this.logger.debug(
-        `IAP verify-step responded: ${response.data.allowed ? "ALLOWED" : "DENIED"} reason=${response.data.reason}`,
+        `IAP verify-step responded: ${response.data.allowed ? "ALLOWED" : "DENIED"} reason=${response.data.reason}`
       );
       return response.data;
     }
@@ -248,7 +248,7 @@ export class IAPVerificationService {
     throw new Error(
       response.text
         ? `IAP verify-step failed: ${response.text}`
-        : `IAP verify-step failed with status ${response.status}`,
+        : `IAP verify-step failed with status ${response.status}`
     );
   }
 
@@ -269,7 +269,7 @@ export class IAPVerificationService {
     value: unknown,
     proof: { position: string; sibling_hash: string }[],
     token: Record<string, unknown>,
-    context?: Record<string, unknown>,
+    context?: Record<string, unknown>
   ): Promise<CsrgVerifyActionResponse> {
     if (!this.csrgVerifyEnabled) {
       throw new Error("CSRG verification is disabled");
@@ -288,12 +288,12 @@ export class IAPVerificationService {
     const response = await postJson<CsrgVerifyActionResponse>(
       `${this.csrgBaseUrl}/verify/action`,
       payload,
-      Math.min(this.timeoutMs, 15000),
+      Math.min(this.timeoutMs, 15000)
     );
 
     if (response.ok && response.data) {
       this.logger.info(
-        `[CSRG] /verify/action responded: ${response.data.allowed ? "ALLOWED" : "DENIED"} reason=${response.data.reason}`,
+        `[CSRG] /verify/action responded: ${response.data.allowed ? "ALLOWED" : "DENIED"} reason=${response.data.reason}`
       );
       return response.data;
     }
@@ -325,7 +325,7 @@ export class IAPVerificationService {
     const response = await postJson<AuditLogResponse>(
       `${this.iapBaseUrl}/iap/audit`,
       dto as unknown as Record<string, unknown>,
-      this.timeoutMs,
+      this.timeoutMs
     );
 
     if (!response.ok || !response.data) {

@@ -16,14 +16,6 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true
   },
-  "include": [
-    "index.ts",
-    "src/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "test",
-    "**/*.test.ts"
-  ]
+  "include": ["index.ts", "src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "**/*.test.ts"]
 }

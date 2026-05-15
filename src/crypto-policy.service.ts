@@ -1,9 +1,9 @@
 /**
  * Crypto-Bound Policy Service
- * 
+ *
  * Embeds policy rules into CSRG tokens with cryptographic proofs.
  * Similar to enterprise GCP IAM flow but for customer policy management.
- * 
+ *
  * Flow:
  * 1. Policy update -> build policy metadata -> call CSRG /intent
  * 2. CSRG hashes policy into Merkle tree -> signs with Ed25519
@@ -104,7 +104,7 @@ function createLogger(logger?: LoggerLike): Required<LoggerLike> {
 async function postJson<T>(
   url: string,
   payload: Record<string, unknown>,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<JsonResponse<T>> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -141,7 +141,7 @@ function computePolicyDigest(rules: PolicyRule[]): string {
       scope: r.scope,
     })),
     null,
-    0,
+    0
   );
   return createHash("sha256").update(`policy|${canonical}`).digest("hex");
 }
@@ -153,11 +153,13 @@ export class CryptoPolicyService {
   private cachedToken: CsrgPolicyToken | null = null;
   private cachedPolicyDigest: string | null = null;
 
-  constructor(options: {
-    csrgBaseUrl?: string;
-    timeoutMs?: number;
-    logger?: LoggerLike;
-  } = {}) {
+  constructor(
+    options: {
+      csrgBaseUrl?: string;
+      timeoutMs?: number;
+      logger?: LoggerLike;
+    } = {}
+  ) {
     this.logger = createLogger(options.logger);
     this.csrgBaseUrl = options.csrgBaseUrl || process.env.CSRG_URL || DEFAULT_CSRG_URL;
     this.timeoutMs = options.timeoutMs ?? 30000;
@@ -170,7 +172,7 @@ export class CryptoPolicyService {
   async issuePolicyToken(
     policyState: PolicyState,
     identity: { userId: string; agentId: string; contextId: string },
-    validitySeconds: number = 3600,
+    validitySeconds: number = 3600
   ): Promise<CsrgPolicyToken> {
     const policyDigest = computePolicyDigest(policyState.policy.rules);
 
@@ -200,13 +202,13 @@ export class CryptoPolicyService {
     };
 
     this.logger.info(
-      `[CryptoPolicy] Issuing token: version=${policyState.version}, rules=${policyState.policy.rules.length}, digest=${policyDigest.slice(0, 16)}...`,
+      `[CryptoPolicy] Issuing token: version=${policyState.version}, rules=${policyState.policy.rules.length}, digest=${policyDigest.slice(0, 16)}...`
     );
 
     const response = await postJson<CsrgPolicyToken>(
       `${this.csrgBaseUrl}/intent`,
       request as unknown as Record<string, unknown>,
-      this.timeoutMs,
+      this.timeoutMs
     );
 
     if (!response.ok || !response.data) {
@@ -224,7 +226,7 @@ export class CryptoPolicyService {
     this.cachedPolicyDigest = policyDigest;
 
     this.logger.info(
-      `[CryptoPolicy] Token issued: intent_ref=${token.intent_reference}, merkle_root=${token.merkle_root?.slice(0, 16)}...`,
+      `[CryptoPolicy] Token issued: intent_ref=${token.intent_reference}, merkle_root=${token.merkle_root?.slice(0, 16)}...`
     );
 
     return token;
@@ -235,7 +237,7 @@ export class CryptoPolicyService {
    */
   verifyPolicyDigest(
     currentPolicyDigest: string,
-    tokenPolicyDigest?: string,
+    tokenPolicyDigest?: string
   ): { valid: boolean; reason: string } {
     if (!tokenPolicyDigest) {
       return {
@@ -259,14 +261,14 @@ export class CryptoPolicyService {
    */
   async verifyPolicyRule(
     ruleId: string,
-    toolName: string,
+    toolName: string
   ): Promise<{ allowed: boolean; reason: string }> {
     if (!this.cachedToken) {
       return { allowed: false, reason: "No policy token cached" };
     }
 
     const ruleProof = this.cachedToken.step_proofs?.find(
-      (p) => p.path.includes(ruleId) || p.path.includes(toolName),
+      (p) => p.path.includes(ruleId) || p.path.includes(toolName)
     );
 
     if (!ruleProof) {
@@ -284,7 +286,7 @@ export class CryptoPolicyService {
     const response = await postJson<{ allowed: boolean; reason: string }>(
       `${this.csrgBaseUrl}/verify/action`,
       verifyRequest,
-      this.timeoutMs,
+      this.timeoutMs
     );
 
     if (!response.ok || !response.data) {

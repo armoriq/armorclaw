@@ -214,7 +214,7 @@ function isPaymentTool(toolName: string): boolean {
 
 export function detectDataClasses(
   toolName: string,
-  toolParams: Record<string, unknown> | undefined,
+  toolParams: Record<string, unknown> | undefined
 ): Set<PolicyDataClass> {
   const texts: string[] = [];
   const keys: string[] = [];
@@ -357,9 +357,7 @@ export class PolicyStore {
       const updatedAt =
         typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString();
       const updatedBy = typeof parsed.updatedBy === "string" ? parsed.updatedBy : undefined;
-      const history = Array.isArray(parsed.history)
-        ? (parsed.history as PolicyHistoryEntry[])
-        : [];
+      const history = Array.isArray(parsed.history) ? (parsed.history as PolicyHistoryEntry[]) : [];
 
       this.state = {
         version,
@@ -389,9 +387,7 @@ export class PolicyStore {
 
   async applyUpdate(update: PolicyUpdate, actor?: string): Promise<PolicyState> {
     const nextRules =
-      update.mode === "replace"
-        ? update.rules
-        : mergeRules(this.state.policy.rules, update.rules);
+      update.mode === "replace" ? update.rules : mergeRules(this.state.policy.rules, update.rules);
 
     const nextPolicy: PolicyDefinition = { rules: nextRules };
     const nextVersion = this.state.version + 1;
@@ -453,7 +449,7 @@ export class PolicyStore {
     id: string,
     position: number,
     actor?: string,
-    reason?: string,
+    reason?: string
   ): Promise<PolicyState> {
     const rules = [...this.state.policy.rules];
     const index = rules.findIndex((rule) => rule.id === id);
