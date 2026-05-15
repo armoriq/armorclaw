@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 /**
  * ArmorIQ Intent Drift Live Test
- * 
+ *
  * This script tests that ArmorIQ blocks tool calls that aren't in the original plan.
- * 
+ *
  * Usage: node test-intent-drift.mjs
  */
 
 import { ArmorIQClient } from "@armoriq/sdk";
 
-const API_KEY = process.env.ARMORIQ_API_KEY || "ak_live_9b566af8e02585ac1ec08d72a95045b00de99e092e8ed1ffe531b474e58e108e";
+const API_KEY =
+  process.env.ARMORIQ_API_KEY ||
+  "ak_live_9b566af8e02585ac1ec08d72a95045b00de99e092e8ed1ffe531b474e58e108e";
 
 async function testIntentDrift() {
   console.log("🧪 ArmorIQ Intent Drift Test\n");
@@ -52,11 +54,15 @@ async function testIntentDrift() {
     token = await client.getIntentToken(planCapture, {}, 60);
     console.log(`   Token issued: ${token.tokenId.substring(0, 16)}...`);
     console.log(`   Plan hash: ${token.planHash?.substring(0, 16)}...`);
-    console.log(`   Expires in: ${token.expiresAt ? (token.expiresAt - Date.now() / 1000).toFixed(0) : "N/A"}s`);
+    console.log(
+      `   Expires in: ${token.expiresAt ? (token.expiresAt - Date.now() / 1000).toFixed(0) : "N/A"}s`
+    );
     console.log(`   Total steps: ${token.totalSteps}`);
     console.log(`   Raw token plan steps: ${token.rawToken?.plan?.steps?.length || 0}`);
     if (token.rawToken?.plan?.steps) {
-      console.log(`   Plan steps: ${JSON.stringify(token.rawToken.plan.steps.map(s => s.action))}`);
+      console.log(
+        `   Plan steps: ${JSON.stringify(token.rawToken.plan.steps.map((s) => s.action))}`
+      );
     }
   } catch (err) {
     console.error(`   ❌ Token issuance failed: ${err.message}`);
@@ -81,17 +87,19 @@ async function testIntentDrift() {
   console.log("=".repeat(60));
 
   try {
-    const result = await client.invoke("openclaw", "write_file", token, { 
-      path: "/tmp/malicious.txt", 
-      content: "This should be blocked" 
+    const result = await client.invoke("openclaw", "write_file", token, {
+      path: "/tmp/malicious.txt",
+      content: "This should be blocked",
     });
     console.log("   ⚠️  write_file ALLOWED - THIS IS A SECURITY ISSUE!");
     console.log(`   Result: ${JSON.stringify(result)}`);
   } catch (err) {
-    if (err.message.includes("intent drift") || 
-        err.message.includes("not in plan") ||
-        err.message.includes("not found in the original plan") ||
-        err.message.includes("IntentMismatch")) {
+    if (
+      err.message.includes("intent drift") ||
+      err.message.includes("not in plan") ||
+      err.message.includes("not found in the original plan") ||
+      err.message.includes("IntentMismatch")
+    ) {
       console.log("   ✅ write_file BLOCKED (as expected - intent drift protection)");
       console.log(`   Error: ${err.message}`);
     } else {
@@ -104,15 +112,17 @@ async function testIntentDrift() {
   console.log("=".repeat(60));
 
   try {
-    const result = await client.invoke("openclaw", "bash", token, { 
-      command: "rm -rf /" 
+    const result = await client.invoke("openclaw", "bash", token, {
+      command: "rm -rf /",
     });
     console.log("   ⚠️  bash ALLOWED - THIS IS A CRITICAL SECURITY ISSUE!");
   } catch (err) {
-    if (err.message.includes("intent drift") || 
-        err.message.includes("not in plan") ||
-        err.message.includes("not found in the original plan") ||
-        err.message.includes("IntentMismatch")) {
+    if (
+      err.message.includes("intent drift") ||
+      err.message.includes("not in plan") ||
+      err.message.includes("not found in the original plan") ||
+      err.message.includes("IntentMismatch")
+    ) {
       console.log("   ✅ bash BLOCKED (as expected - intent drift protection)");
     } else {
       console.log(`   ✅ bash BLOCKED with error: ${err.message.substring(0, 80)}...`);

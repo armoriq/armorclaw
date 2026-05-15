@@ -38,7 +38,7 @@ The **official OpenClaw** `before_agent_start` hook only passes 4 fields to plug
 ```typescript
 // Official OpenClaw (vanilla)
 {
-  agentId, sessionKey, workspaceDir, messageProvider
+  (agentId, sessionKey, workspaceDir, messageProvider);
 }
 ```
 
@@ -47,9 +47,19 @@ The ArmorIQ plugin needs **13 fields** to function:
 ```typescript
 // What ArmorIQ needs
 {
-  agentId, sessionKey, workspaceDir, messageProvider,
-  messageChannel, accountId, senderId, senderName,
-  senderUsername, senderE164, runId, model, modelRegistry
+  (agentId,
+    sessionKey,
+    workspaceDir,
+    messageProvider,
+    messageChannel,
+    accountId,
+    senderId,
+    senderName,
+    senderUsername,
+    senderE164,
+    runId,
+    model,
+    modelRegistry);
 }
 ```
 
@@ -65,13 +75,13 @@ A secondary issue in v2026.2.12: `toToolDefinitions()` in `pi-tool-definition-ad
 
 Apply `patch-armoriq.sh` to a fresh v2026.2.12 clone. The patch modifies 5 files:
 
-| File | Change |
-|------|--------|
-| `src/plugins/types.ts` | Extended `PluginHookAgentContext` with 9 new optional fields, extended `PluginHookBeforeAgentStartEvent` with `tools` array |
-| `src/agents/pi-embedded-runner/run/attempt.ts` | Passes extended context to `runBeforeAgentStart` hook; passes `agentId`/`sessionKey` to `subscribeEmbeddedPiSession` |
-| `src/agents/pi-embedded-subscribe.types.ts` | Added `agentId?`/`sessionKey?` to `SubscribeEmbeddedPiSessionParams` |
-| `src/agents/pi-embedded-subscribe.handlers.tools.ts` | Fixed `before_tool_call` hook to pass `agentId`/`sessionKey` from subscribe params |
-| `src/agents/pi-tool-definition-adapter.ts` | Removed duplicate `before_tool_call`/`after_tool_call` hooks from `toToolDefinitions()` (hooks are handled by `handlers.tools.ts`) |
+| File                                                 | Change                                                                                                                             |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `src/plugins/types.ts`                               | Extended `PluginHookAgentContext` with 9 new optional fields, extended `PluginHookBeforeAgentStartEvent` with `tools` array        |
+| `src/agents/pi-embedded-runner/run/attempt.ts`       | Passes extended context to `runBeforeAgentStart` hook; passes `agentId`/`sessionKey` to `subscribeEmbeddedPiSession`               |
+| `src/agents/pi-embedded-subscribe.types.ts`          | Added `agentId?`/`sessionKey?` to `SubscribeEmbeddedPiSessionParams`                                                               |
+| `src/agents/pi-embedded-subscribe.handlers.tools.ts` | Fixed `before_tool_call` hook to pass `agentId`/`sessionKey` from subscribe params                                                 |
+| `src/agents/pi-tool-definition-adapter.ts`           | Removed duplicate `before_tool_call`/`after_tool_call` hooks from `toToolDefinitions()` (hooks are handled by `handlers.tools.ts`) |
 
 All changes are **backward-compatible** (new fields are optional).
 
@@ -136,7 +146,7 @@ Edit `~/.openclaw/openclaw.json` and add under `plugins.entries`:
 Create a `.env` file in the openclaw root:
 
 ```bash
-# ArmorIQ 
+# ArmorIQ
 ARMORIQ_API_KEY=ak_live_...
 IAP_BACKEND_URL=https://customer-api.armoriq.ai
 CSRG_URL=https://customer-iap.armoriq.ai
@@ -161,23 +171,23 @@ pnpm dev gateway
 
 ## Environment Variables Reference
 
-| Variable | Used By | Default | Purpose |
-|----------|---------|---------|---------|
-| `ARMORIQ_API_KEY` | Plugin config | none | API key for ArmorIQ services |
-| `IAP_BACKEND_URL` | `iap-verification.service.ts` | `https://customer-api.armoriq.ai` | IAP backend for intent tokens |
-| `CONMAP_AUTO_URL` | `iap-verification.service.ts` | (fallback for IAP) | Alternative IAP URL |
-| `CSRG_URL` | `crypto-policy.service.ts`, `iap-verification.service.ts` | `https://customer-iap.armoriq.ai` | CSRG cryptographic verification |
-| `IAP_ENDPOINT` | Plugin config (`index.ts`) | none | IAP endpoint (plugin-level) |
-| `PROXY_ENDPOINT` | Plugin config (`index.ts`) | none | Proxy endpoint |
-| `BACKEND_ENDPOINT` | Plugin config (`index.ts`) | none | Backend endpoint |
-| `REQUIRE_CSRG_PROOFS` | `iap-verification.service.ts` | `true` | Require CSRG proof headers |
-| `CSRG_VERIFY_ENABLED` | `iap-verification.service.ts` | `true` | Enable CSRG /verify/action |
-| `USER_ID` | Plugin config | none | Default user ID |
-| `AGENT_ID` | Plugin config | none | Default agent ID |
-| `CONTEXT_ID` | Plugin config | none | Default context ID |
-| `ARMORIQ_POLICY_STORE_PATH` | Plugin config | none | Policy JSON file path |
-| `ARMORIQ_POLICY_UPDATE_ENABLED` | Plugin config | none | Allow policy updates |
-| `ARMORIQ_CRYPTO_POLICY_ENABLED` | Plugin config | none | Enable crypto policy |
+| Variable                        | Used By                                                   | Default                           | Purpose                         |
+| ------------------------------- | --------------------------------------------------------- | --------------------------------- | ------------------------------- |
+| `ARMORIQ_API_KEY`               | Plugin config                                             | none                              | API key for ArmorIQ services    |
+| `IAP_BACKEND_URL`               | `iap-verification.service.ts`                             | `https://customer-api.armoriq.ai` | IAP backend for intent tokens   |
+| `CONMAP_AUTO_URL`               | `iap-verification.service.ts`                             | (fallback for IAP)                | Alternative IAP URL             |
+| `CSRG_URL`                      | `crypto-policy.service.ts`, `iap-verification.service.ts` | `https://customer-iap.armoriq.ai` | CSRG cryptographic verification |
+| `IAP_ENDPOINT`                  | Plugin config (`index.ts`)                                | none                              | IAP endpoint (plugin-level)     |
+| `PROXY_ENDPOINT`                | Plugin config (`index.ts`)                                | none                              | Proxy endpoint                  |
+| `BACKEND_ENDPOINT`              | Plugin config (`index.ts`)                                | none                              | Backend endpoint                |
+| `REQUIRE_CSRG_PROOFS`           | `iap-verification.service.ts`                             | `true`                            | Require CSRG proof headers      |
+| `CSRG_VERIFY_ENABLED`           | `iap-verification.service.ts`                             | `true`                            | Enable CSRG /verify/action      |
+| `USER_ID`                       | Plugin config                                             | none                              | Default user ID                 |
+| `AGENT_ID`                      | Plugin config                                             | none                              | Default agent ID                |
+| `CONTEXT_ID`                    | Plugin config                                             | none                              | Default context ID              |
+| `ARMORIQ_POLICY_STORE_PATH`     | Plugin config                                             | none                              | Policy JSON file path           |
+| `ARMORIQ_POLICY_UPDATE_ENABLED` | Plugin config                                             | none                              | Allow policy updates            |
+| `ARMORIQ_CRYPTO_POLICY_ENABLED` | Plugin config                                             | none                              | Enable crypto policy            |
 
 ---
 
@@ -188,9 +198,11 @@ pnpm dev gateway
 **Error**: Type mismatch when accessing `ctx.model` in hook handler.
 
 **Fix**: Used type assertions in the plugin `index.ts` since the vanilla SDK types didn't include the extended fields:
+
 ```typescript
 const model = (ctx as any).model;
 ```
+
 After the PR is merged upstream, these casts can be removed.
 
 ### 2. Plugin install failed - missing dependency
@@ -198,6 +210,7 @@ After the PR is merged upstream, these casts can be removed.
 **Error**: `failed to load plugin: Cannot find module '@mariozechner/pi-ai'`
 
 **Fix**: Installed the missing dependency in the plugin:
+
 ```bash
 cd armoriq-openclaw-plugin
 npm install @mariozechner/pi-ai
@@ -209,6 +222,7 @@ npm run build
 **Error**: `plugin already exists: ~/.openclaw/extensions/armoriq`
 
 **Fix**: Remove the old extension directory first:
+
 ```bash
 rm -rf ~/.openclaw/extensions/armoriq
 ```
@@ -240,16 +254,19 @@ rm -rf ~/.openclaw/extensions/armoriq
 ### 7. policy_update denied on v2026.2.12 (before_tool_call missing context)
 
 **Log**:
+
 ```
 [tool_call] tool=policy_update runKey=null sessionKey=undefined candidates=[]
 policy_update denied (allowList=[...], candidates=[], senderId=, senderUsername=, sessionKey=)
 ```
 
 **Cause**: Two issues in vanilla v2026.2.12:
+
 1. `toToolDefinitions()` in `pi-tool-definition-adapter.ts` added an inline `before_tool_call` hook that fires **without any identity context** (`agentId`, `sessionKey` are undefined). This duplicate hook fires before the one in `handlers.tools.ts`, causing immediate denial.
 2. `handlers.tools.ts` only passed `{ toolName }` to `runBeforeToolCall` — no `agentId` or `sessionKey`.
 
 **Fix** (applied in `patch-armoriq.sh`):
+
 - Removed the duplicate `before_tool_call` + `after_tool_call` hooks from `toToolDefinitions()` (hooks are already handled by `handlers.tools.ts`)
 - Added `agentId`/`sessionKey` to `SubscribeEmbeddedPiSessionParams`
 - Passed `agentId: sessionAgentId` and `sessionKey: params.sessionKey` in the `subscribeEmbeddedPiSession()` call in `attempt.ts`
@@ -276,12 +293,14 @@ Intent token issued: id=..., plan_hash=..., expires=60.0s, stepProofs=8
 ```
 
 Policy operations via Telegram (v2026.2.12 patched):
+
 ```
 [tool_call] tool=policy_update runKey=agent:main:main sessionKey=agent:main:main
 [tool_call] tool=policy_update runKey=agent:main:main sessionKey=agent:main:main
 ```
 
 This confirms:
+
 - Plugin loads and registers hooks
 - Intent planning works (uses `model` from extended context)
 - Token issuance works (IAP backend)
@@ -293,11 +312,11 @@ This confirms:
 
 ## Test Results (OpenClaw v2026.2.12 + patch-armoriq.sh)
 
-| Test | Result |
-|------|--------|
-| Full build (`pnpm build`) | Pass |
-| Plugin install | Success |
-| Plugin runtime (plugins list) | Status: loaded |
-| Gateway dev run with Telegram | Working |
-| Intent planning + tool verification | Working |
-| Policy list / update / reset (Telegram) | Working |
+| Test                                    | Result         |
+| --------------------------------------- | -------------- |
+| Full build (`pnpm build`)               | Pass           |
+| Plugin install                          | Success        |
+| Plugin runtime (plugins list)           | Status: loaded |
+| Gateway dev run with Telegram           | Working        |
+| Intent planning + tool verification     | Working        |
+| Policy list / update / reset (Telegram) | Working        |

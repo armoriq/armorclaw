@@ -18,7 +18,11 @@
     "test:watch": "vitest --watch",
     "prepublishOnly": "npm run build",
     "clean": "rm -rf dist",
-    "build:install": "tsc && node scripts/install-extension.mjs"
+    "build:install": "tsc && node scripts/install-extension.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
   },
   "dependencies": {
     "@armoriq/sdk": "^0.2.12",
@@ -32,7 +36,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
     "openclaw": "^2026.3.13",
+    "prettier": "^3.8.3",
     "typescript": "^5.9.0",
     "vitest": "^2.0.0"
   },

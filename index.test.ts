@@ -24,7 +24,12 @@ vi.mock("@armoriq/sdk", () => ({
   },
 }));
 
-type HookName = "before_tool_call" | "agent_end" | "inbound_claim" | "before_prompt_build" | "llm_input";
+type HookName =
+  | "before_tool_call"
+  | "agent_end"
+  | "inbound_claim"
+  | "before_prompt_build"
+  | "llm_input";
 
 function createApi(pluginConfig: Record<string, unknown>) {
   const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
@@ -80,7 +85,7 @@ async function fireInboundClaim(handlers: Map<string, Array<(event: any, ctx: an
       conversationId: "session:test",
       isGroup: false,
     },
-    { channelId: "whatsapp" },
+    { channelId: "whatsapp" }
   );
 }
 
@@ -89,7 +94,7 @@ async function fireLlmInput(
   handlers: Map<string, Array<(event: any, ctx: any) => any>>,
   runId: string,
   prompt = "Read a file",
-  systemPrompt = "Available tools:\n- read: Read files\n- send_email: Send email\n- write_file: Write file",
+  systemPrompt = "Available tools:\n- read: Read files\n- send_email: Send email\n- write_file: Write file"
 ) {
   const handler = handlers.get("llm_input")?.[0];
   await handler?.(
@@ -103,7 +108,7 @@ async function fireLlmInput(
       historyMessages: [],
       imagesCount: 0,
     },
-    { agentId: "agent-1", sessionKey: "session:test" },
+    { agentId: "agent-1", sessionKey: "session:test" }
   );
   // Wait for the planning promise to complete
   await new Promise((r) => setTimeout(r, 10));
@@ -193,7 +198,7 @@ describe("ArmorIQ plugin", () => {
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
       { toolName: "web_fetch", params: { url: "https://example.com" } },
-      ctx,
+      ctx
     );
     expect(result?.block).not.toBe(true);
   });
@@ -248,7 +253,7 @@ describe("ArmorIQ plugin", () => {
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
       { toolName: "web_fetch", params: { url: "https://example.com" } },
-      ctx,
+      ctx
     );
     expect(result?.block).not.toBe(true);
   });
@@ -327,7 +332,7 @@ describe("ArmorIQ plugin", () => {
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.(
       { toolName: "send_email", params: { body: "Card 4111 1111 1111 1111" } },
-      ctx,
+      ctx
     );
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("policy deny");
@@ -425,19 +430,19 @@ describe("ArmorIQ plugin", () => {
 
     const result1 = await beforeToolCall?.(
       { toolName: "send_email", params: { to: "user@example.com" } },
-      ctx,
+      ctx
     );
     expect(result1?.block).not.toBe(true);
 
     const result2 = await beforeToolCall?.(
       { toolName: "read_file", params: { path: "/tmp/data.txt" } },
-      ctx,
+      ctx
     );
     expect(result2?.block).not.toBe(true);
 
     const result3 = await beforeToolCall?.(
       { toolName: "write_file", params: { path: "/tmp/output.txt" } },
-      ctx,
+      ctx
     );
     expect(result3?.block).not.toBe(true);
 
@@ -480,10 +485,7 @@ describe("ArmorIQ plugin", () => {
 
     const ctx = createCtx("run-no-plan");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
-    const result = await beforeToolCall?.(
-      { toolName: "send_email", params: {} },
-      ctx,
-    );
+    const result = await beforeToolCall?.({ toolName: "send_email", params: {} }, ctx);
 
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("intent plan missing");
@@ -507,11 +509,17 @@ describe("ArmorIQ plugin", () => {
       await fireInboundClaim(handlers);
       await fireLlmInput(handlers, runId, "Read a file", "- read: Read files");
       const beforeToolCall = handlers.get("before_tool_call")?.[0];
-      return await beforeToolCall?.({ toolName: "read", params: { path: "x.txt" } }, createCtx(runId));
+      return await beforeToolCall?.(
+        { toolName: "read", params: { path: "x.txt" } },
+        createCtx(runId)
+      );
     };
 
     it("parses Gemini-style closed ```json fenced response", async () => {
-      const result = await setupAndFire("```json\n" + JSON.stringify(validPlan) + "\n```", "run-fenced");
+      const result = await setupAndFire(
+        "```json\n" + JSON.stringify(validPlan) + "\n```",
+        "run-fenced"
+      );
       expect(result?.block).not.toBe(true);
     });
 
@@ -583,4 +591,3 @@ describe("ArmorIQ plugin", () => {
     });
   });
 });
-

@@ -24,10 +24,10 @@ The plugin migrated from the deprecated `before_agent_start` hook to three nativ
 
 ArmorClaw now follows the OpenClaw versioning scheme. This makes it clear which ArmorClaw version is compatible with which OpenClaw version:
 
-| ArmorClaw | OpenClaw | Install |
-|---|---|---|
-| 2026.3.x | 2026.3.x | `npm install @armoriq/armorclaw` |
-| 2026.2.x | 2026.2.x | `npm install @armoriq/armorclaw@openclaw-2026.2` |
+| ArmorClaw | OpenClaw | Install                                          |
+| --------- | -------- | ------------------------------------------------ |
+| 2026.3.x  | 2026.3.x | `npm install @armoriq/armorclaw`                 |
+| 2026.2.x  | 2026.2.x | `npm install @armoriq/armorclaw@openclaw-2026.2` |
 
 ## Breaking Changes
 

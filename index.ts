@@ -141,7 +141,7 @@ const planningPromises = new Map<string, Promise<void>>();
 
 function stringEnum<T extends readonly string[]>(
   values: T,
-  options: { description?: string } = {},
+  options: { description?: string } = {}
 ) {
   return Type.Unsafe<T[number]>({
     type: "string",
@@ -159,7 +159,7 @@ const PolicyRuleToolSchema = Type.Object(
     params: Type.Optional(Type.Object({}, { additionalProperties: true })),
     scope: Type.Optional(stringEnum(POLICY_SCOPES)),
   },
-  { additionalProperties: false },
+  { additionalProperties: false }
 );
 
 const PolicyUpdateToolSchema = Type.Object(
@@ -167,7 +167,7 @@ const PolicyUpdateToolSchema = Type.Object(
     text: Type.Optional(
       Type.String({
         description: "Plain-language policy command (update/list/delete/reset).",
-      }),
+      })
     ),
     update: Type.Optional(
       Type.Object(
@@ -179,11 +179,11 @@ const PolicyUpdateToolSchema = Type.Object(
           expiresAt: Type.Optional(Type.Number({ description: "Unix timestamp (seconds)" })),
           actor: Type.Optional(Type.String({ description: "Optional actor label" })),
         },
-        { additionalProperties: false },
-      ),
+        { additionalProperties: false }
+      )
     ),
   },
-  { additionalProperties: false },
+  { additionalProperties: false }
 );
 
 function readString(value: unknown): string | undefined {
@@ -302,7 +302,7 @@ function formatPolicyList(state: PolicyState): string {
     return `Policy version ${state.version}. No explicit rules. Default: allow all tools.`;
   }
   const lines = state.policy.rules.map(
-    (rule, idx) => `${idx + 1}. ${formatPolicyRule(rule)} (order=${idx + 1})`,
+    (rule, idx) => `${idx + 1}. ${formatPolicyRule(rule)} (order=${idx + 1})`
   );
   return `Policy version ${state.version}:\n${lines.join("\n")}`;
 }
@@ -442,7 +442,7 @@ function parsePolicyTextCommand(text: string, state: PolicyState): PolicyCommand
   const ids = extractPolicyIdsFromText(trimmed, state);
 
   const reorderMatch = trimmed.match(
-    /\bpolicy\s*(?:priorit(?:y|ize|ise)|reorder|move)\s+(policy\d+|[a-z0-9][\w.-]*)\s+(?:to\s+)?(\d+)\b/i,
+    /\bpolicy\s*(?:priorit(?:y|ize|ise)|reorder|move)\s+(policy\d+|[a-z0-9][\w.-]*)\s+(?:to\s+)?(\d+)\b/i
   );
   if (reorderMatch?.[1] && reorderMatch?.[2]) {
     const id = reorderMatch[1];
@@ -526,7 +526,9 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
       readBoolean(raw.cryptoPolicyEnabled) ??
       readBoolean(process.env.ARMORIQ_CRYPTO_POLICY_ENABLED),
     csrgEndpoint:
-      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? "https://customer-iap.armoriq.ai",
+      readString(raw.csrgEndpoint) ??
+      readString(process.env.CSRG_URL) ??
+      "https://customer-iap.armoriq.ai",
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
     useProduction: readBoolean(raw.useProduction),
     iapEndpoint: readString(raw.iapEndpoint) ?? readString(process.env.IAP_ENDPOINT),
@@ -550,7 +552,7 @@ function resolvePolicyStorePath(api: OpenClawPluginApi, cfg: ArmorIqConfig): str
 
 function isPolicyUpdateAllowed(
   cfg: ArmorIqConfig,
-  ctx: ToolContext,
+  ctx: ToolContext
 ): {
   allowed: boolean;
   reason?: string;
@@ -590,13 +592,17 @@ function isPolicyUpdateAllowed(
     : { allowed: false, reason: "ArmorIQ policy update denied", candidates };
 }
 
-function buildToolContextFromCaches(
-  nativeCtx: { agentId?: string; sessionKey?: string; sessionId?: string; runId?: string },
-): ToolContext {
+function buildToolContextFromCaches(nativeCtx: {
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  runId?: string;
+}): ToolContext {
   const key = nativeCtx.sessionKey ?? nativeCtx.agentId ?? "";
-  const senderInfo = senderIdentityCache.get(key)
-    ?? (nativeCtx.sessionId ? senderIdentityCache.get(nativeCtx.sessionId) : undefined)
-    ?? (senderIdentityCache.size > 0 ? [...senderIdentityCache.values()].at(-1) : undefined);
+  const senderInfo =
+    senderIdentityCache.get(key) ??
+    (nativeCtx.sessionId ? senderIdentityCache.get(nativeCtx.sessionId) : undefined) ??
+    (senderIdentityCache.size > 0 ? [...senderIdentityCache.values()].at(-1) : undefined);
   return {
     agentId: nativeCtx.agentId,
     sessionKey: nativeCtx.sessionKey,
@@ -727,7 +733,7 @@ function parseCsrgProofHeaders(ctx: Record<string, unknown>): {
 
 function validateCsrgProofHeaders(
   proofs: CsrgProofHeaders | undefined,
-  required: boolean,
+  required: boolean
 ): string | null {
   if (!required) {
     return null;
@@ -824,7 +830,7 @@ function isSubsetValue(needle: unknown, haystack: unknown): boolean {
 function findPlanStepIndices(
   plan: Record<string, unknown>,
   toolName: string,
-  toolParams?: Record<string, unknown>,
+  toolParams?: Record<string, unknown>
 ): { matches: number[]; paramMatches: number[] } {
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
   const normalizedTool = normalizeToolName(toolName);
@@ -876,7 +882,7 @@ function readStepProofsFromToken(tokenObj: Record<string, unknown>): unknown[] |
 
 function resolveStepProofEntry(
   stepProofs: unknown[],
-  stepIndex: number,
+  stepIndex: number
 ): { proof?: unknown; path?: string; valueDigest?: string; stepIndex: number } | null {
   const entry = stepProofs[stepIndex];
   if (!entry) {
@@ -920,7 +926,7 @@ function parseStepIndexFromPath(path?: string): number | null {
 
 function getContextTokenUsedStepIndices(
   runKey: string | null,
-  tokenRaw: string,
+  tokenRaw: string
 ): Set<number> | undefined {
   if (!runKey) {
     return undefined;
@@ -955,7 +961,7 @@ function scoreProofPath(path?: string): number {
 
 function chooseProofEntry(
   entries: Array<{ stepIndex: number; proof?: unknown; path?: string; valueDigest?: string }>,
-  usedStepIndices?: Set<number>,
+  usedStepIndices?: Set<number>
 ): { stepIndex: number; proof?: unknown; path?: string; valueDigest?: string } | null {
   if (!entries.length) {
     return null;
@@ -1039,7 +1045,7 @@ function resolveCsrgProofsFromToken(params: {
   }
 
   const entriesMatchingTool = resolvedEntries.filter((resolved) =>
-    matches.includes(resolved.stepIndex),
+    matches.includes(resolved.stepIndex)
   );
   if (entriesMatchingTool.length === 0) {
     return null;
@@ -1052,7 +1058,7 @@ function resolveCsrgProofsFromToken(params: {
 
   const selectedEntry = chooseProofEntry(
     entriesMatchingParams.length > 0 ? entriesMatchingParams : entriesMatchingTool,
-    params.usedStepIndices,
+    params.usedStepIndices
   );
   if (
     !selectedEntry ||
@@ -1197,7 +1203,7 @@ function buildToolList(tools?: Array<{ name: string; description?: string }>): s
 
 function findPlanStep(
   plan: Record<string, unknown>,
-  toolName: string,
+  toolName: string
 ): Record<string, unknown> | null {
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
   const normalizedTool = normalizeToolName(toolName);
@@ -1220,7 +1226,7 @@ function findPlanStep(
 
 function isParamsAllowedByPlan(
   _step: Record<string, unknown>,
-  _params: Record<string, unknown>,
+  _params: Record<string, unknown>
 ): boolean {
   // TODO(armoriq): Enforce parameter-level intent by comparing call params against step metadata inputs.
   // This should support placeholders or allowlists of fields to avoid blocking dynamic results.
@@ -1228,7 +1234,7 @@ function isParamsAllowedByPlan(
 }
 
 function parseToolsFromSystemPrompt(
-  systemPrompt?: string,
+  systemPrompt?: string
 ): Array<{ name: string; description?: string }> {
   if (!systemPrompt) return [];
   const tools: Array<{ name: string; description?: string }> = [];
@@ -1310,7 +1316,7 @@ async function buildPlanFromPrompt(params: {
     // we pass dynamic strings so go through `unknown` to keep tsc happy.
     model = (getModel as unknown as (p: string, m: string) => Model<Api>)(
       params.provider,
-      params.modelId,
+      params.modelId
     );
   } catch {
     // Fallback: minimal descriptor that at least has the api field set so
@@ -1350,7 +1356,7 @@ async function buildPlanFromPrompt(params: {
       apiKey: params.apiKey,
       maxTokens: 512,
       temperature: 0.2,
-    },
+    }
   );
 
   const content = response.content as string | { type?: string; text?: string }[] | undefined;
@@ -1493,7 +1499,7 @@ function sanitizeValue(
     maxKeys: number;
     maxItems: number;
   },
-  depth: number,
+  depth: number
 ): unknown {
   if (depth > opts.maxDepth) {
     return "<max-depth>";
@@ -1542,7 +1548,7 @@ function sanitizeValue(
 
 function sanitizeParams(
   params: Record<string, unknown>,
-  cfg: ArmorIqConfig,
+  cfg: ArmorIqConfig
 ): Record<string, unknown> {
   const sanitized = sanitizeValue(
     params,
@@ -1552,7 +1558,7 @@ function sanitizeParams(
       maxKeys: cfg.maxParamKeys,
       maxItems: cfg.maxParamItems,
     },
-    0,
+    0
   );
   return isPlainObject(sanitized) ? sanitized : {};
 }
@@ -1590,11 +1596,11 @@ export default function register(api: OpenClawPluginApi) {
       const token = await cryptoPolicyService.issuePolicyToken(
         state,
         identity,
-        cfg.validitySeconds,
+        cfg.validitySeconds
       );
       policyStore.setCryptoTokenDigest(token.policy_digest);
       api.logger.info(
-        `armoriq: crypto-bound policy token issued, digest=${token.policy_digest.slice(0, 16)}..., merkle_root=${token.merkle_root?.slice(0, 16)}...`,
+        `armoriq: crypto-bound policy token issued, digest=${token.policy_digest.slice(0, 16)}..., merkle_root=${token.merkle_root?.slice(0, 16)}...`
       );
     } catch (err) {
       api.logger.warn(`armoriq: crypto policy token issuance failed: ${String(err)}`);
@@ -1670,7 +1676,7 @@ export default function register(api: OpenClawPluginApi) {
                   command.id,
                   command.position,
                   actor,
-                  command.reason,
+                  command.reason
                 );
                 return {
                   content: [
@@ -1713,7 +1719,7 @@ export default function register(api: OpenClawPluginApi) {
                       removed > 0
                         ? `Policy updated: removed ${removed} rule(s): ${command.ids.join(", ")}.`
                         : `No matching rules removed. Known rules:\n${formatPolicyList(
-                            policyStore.getState(),
+                            policyStore.getState()
                           )}`,
                   },
                 ],
@@ -1839,7 +1845,7 @@ export default function register(api: OpenClawPluginApi) {
           }
         },
       }),
-      { name: "policy_update" },
+      { name: "policy_update" }
     );
   }
 
@@ -1901,7 +1907,8 @@ export default function register(api: OpenClawPluginApi) {
         const authResult = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
           provider: event.provider,
         });
-        const apiKey = typeof authResult === "string" ? authResult : authResult?.apiKey ?? authResult?.key;
+        const apiKey =
+          typeof authResult === "string" ? authResult : (authResult?.apiKey ?? authResult?.key);
         if (!apiKey) {
           throw new Error(`No API key available for provider ${event.provider}`);
         }
@@ -1973,9 +1980,7 @@ export default function register(api: OpenClawPluginApi) {
         // Surface planning failures in the gateway log. Silent failure here
         // means no plan/intent-token is ever created, which breaks the
         // dashboard (no plan row, no audit chain). Log loudly.
-        api.logger.warn(
-          `armoriq: planning failed (runKey=${runKey}) — ${message}`,
-        );
+        api.logger.warn(`armoriq: planning failed (runKey=${runKey}) — ${message}`);
         if (err instanceof Error && err.stack) {
           api.logger.warn(`armoriq: planning stack:\n${err.stack}`);
         }
@@ -1992,7 +1997,7 @@ export default function register(api: OpenClawPluginApi) {
 
     planningPromises.set(runKey, planPromise);
     api.logger.info(
-      `armoriq: [llm_input] planning started runKey=${runKey} provider=${event.provider} model=${event.model}`,
+      `armoriq: [llm_input] planning started runKey=${runKey} provider=${event.provider} model=${event.model}`
     );
   });
 
@@ -2011,9 +2016,7 @@ export default function register(api: OpenClawPluginApi) {
     if (cached && cached.planId && !cached.error) {
       const token = cached.jwtToken ?? cached.tokenRaw ?? "";
       const backendUrl =
-        cfg.backendEndpoint ??
-        process.env.BACKEND_ENDPOINT ??
-        "http://127.0.0.1:8081";
+        cfg.backendEndpoint ?? process.env.BACKEND_ENDPOINT ?? "http://127.0.0.1:8081";
       if (token) {
         void fetch(`${backendUrl}/iap/plans/${cached.planId}/status`, {
           method: "POST",
@@ -2027,7 +2030,7 @@ export default function register(api: OpenClawPluginApi) {
           api.logger.warn(
             `armoriq: plan complete-on-end failed (non-fatal): ${
               err instanceof Error ? err.message : String(err)
-            }`,
+            }`
           );
         });
       }
@@ -2055,9 +2058,7 @@ export default function register(api: OpenClawPluginApi) {
       if (normalized === "policy_update") return;
       const runKey = resolveRunKey(ctx as ToolContext);
       if (!runKey) return;
-      const cached =
-        planCache.get(runKey) ??
-        planCache.get(sessionKeyIndex.get(runKey) ?? "");
+      const cached = planCache.get(runKey) ?? planCache.get(sessionKeyIndex.get(runKey) ?? "");
       if (!cached) return;
       const token = cached.jwtToken ?? cached.tokenRaw ?? "";
       if (!token) return;
@@ -2070,10 +2071,8 @@ export default function register(api: OpenClawPluginApi) {
           action: "tool_call",
           tool: event.toolName,
           input: sanitizeParams(
-            isPlainObject(event.params)
-              ? (event.params as Record<string, unknown>)
-              : {},
-            cfg,
+            isPlainObject(event.params) ? (event.params as Record<string, unknown>) : {},
+            cfg
           ),
           output: isError ? null : (event.result ?? null),
           status: isError ? "failed" : "success",
@@ -2085,14 +2084,12 @@ export default function register(api: OpenClawPluginApi) {
           api.logger.warn(
             `armoriq: audit-on-success failed (non-fatal): ${
               auditErr instanceof Error ? auditErr.message : String(auditErr)
-            }`,
+            }`
           );
         });
     } catch (err) {
       api.logger.warn(
-        `armoriq: after_tool_call hook errored: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `armoriq: after_tool_call hook errored: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   });
@@ -2102,13 +2099,17 @@ export default function register(api: OpenClawPluginApi) {
     const toolCtx = buildToolContextFromCaches(ctx);
     const runKey = resolveRunKey(toolCtx);
     api.logger.info(
-      `armoriq: [tool_call] tool=${normalizedTool} runKey=${runKey} runId=${toolCtx.runId} sessionKey=${toolCtx.sessionKey} cacheKeys=[${[...planCache.keys()].join(",")}]`,
+      `armoriq: [tool_call] tool=${normalizedTool} runKey=${runKey} runId=${toolCtx.runId} sessionKey=${toolCtx.sessionKey} cacheKeys=[${[...planCache.keys()].join(",")}]`
     );
 
     // Await pending plan if llm_input planning is still in flight
     const pending = planningPromises.get(runKey ?? "");
     if (pending) {
-      try { await pending; } catch { /* errors are captured in planCache */ }
+      try {
+        await pending;
+      } catch {
+        /* errors are captured in planCache */
+      }
       planningPromises.delete(runKey ?? "");
     }
 
@@ -2150,19 +2151,18 @@ export default function register(api: OpenClawPluginApi) {
           `armoriq: policy block tool=${event.toolName} rule=${
             decision.matchedRule?.id ?? "unknown"
           } action=${decision.matchedRule?.action ?? "unknown"} dataClasses=${JSON.stringify(
-            decision.dataClasses,
+            decision.dataClasses
           )} runId=${String(toolCtx.runId ?? "")} sessionKey=${String(
-            toolCtx.sessionKey ?? "",
+            toolCtx.sessionKey ?? ""
           )} senderId=${String(toolCtx.senderId ?? "")} senderUsername=${String(
-            toolCtx.senderUsername ?? "",
-          )}`,
+            toolCtx.senderUsername ?? ""
+          )}`
         );
         // Fire-and-forget audit so the dashboard records the block. We don't
         // await — the deny path must remain fast and never fail because the
         // audit endpoint blipped.
         const cachedForBlock = planCache.get(runKey ?? "");
-        const blockToken =
-          cachedForBlock?.jwtToken ?? cachedForBlock?.tokenRaw ?? "";
+        const blockToken = cachedForBlock?.jwtToken ?? cachedForBlock?.tokenRaw ?? "";
         if (blockToken) {
           void verificationService
             .createAuditLog({
@@ -2182,7 +2182,7 @@ export default function register(api: OpenClawPluginApi) {
               api.logger.warn(
                 `armoriq: audit-on-block failed (non-fatal): ${
                   auditErr instanceof Error ? auditErr.message : String(auditErr)
-                }`,
+                }`
               );
             });
         }
@@ -2199,12 +2199,12 @@ export default function register(api: OpenClawPluginApi) {
       if (!allowed.allowed) {
         api.logger.warn(
           `armoriq: policy_update denied (allowList=${JSON.stringify(
-            cfg.policyUpdateAllowList ?? [],
+            cfg.policyUpdateAllowList ?? []
           )}, candidates=${JSON.stringify(allowed.candidates ?? [])}, senderId=${String(
-            toolCtx.senderId ?? "",
+            toolCtx.senderId ?? ""
           )}, senderUsername=${String(toolCtx.senderUsername ?? "")}, sessionKey=${String(
-            toolCtx.sessionKey ?? "",
-          )})`,
+            toolCtx.sessionKey ?? ""
+          )})`
         );
         return {
           block: true,
@@ -2216,7 +2216,7 @@ export default function register(api: OpenClawPluginApi) {
     const verifyWithIap = async (
       tokenRaw: string,
       plan: Record<string, unknown>,
-      usedStepIndices?: Set<number>,
+      usedStepIndices?: Set<number>
     ): Promise<{ block: true; blockReason: string } | { block: false; stepIndex?: number }> => {
       const proofParse = parseCsrgProofHeaders(toolCtx);
       if (proofParse.error) {
@@ -2240,10 +2240,10 @@ export default function register(api: OpenClawPluginApi) {
       const proofCount = proofs?.proof && Array.isArray(proofs.proof) ? proofs.proof.length : 0;
       api.logger.info(
         `armoriq: verify-step request tool=${event.toolName} runId=${String(
-          toolCtx.runId ?? "",
+          toolCtx.runId ?? ""
         )} proofs=${proofs ? "present" : "none"} proofCount=${proofCount} path=${String(
-          proofs?.path ?? "",
-        )}`,
+          proofs?.path ?? ""
+        )}`
       );
       const proofsRequired =
         verificationService.csrgProofsRequired() && verificationService.csrgVerifyIsEnabled();
@@ -2258,11 +2258,11 @@ export default function register(api: OpenClawPluginApi) {
         if (parsed?.jwtToken) {
           verifyToken = parsed.jwtToken;
           api.logger.info(
-            `armoriq: using jwtToken for verification (length=${verifyToken.length})`,
+            `armoriq: using jwtToken for verification (length=${verifyToken.length})`
           );
         } else {
           api.logger.warn(
-            `armoriq: no jwtToken in token, using raw (keys=${Object.keys(parsed).join(",")})`,
+            `armoriq: no jwtToken in token, using raw (keys=${Object.keys(parsed).join(",")})`
           );
         }
       } catch {
@@ -2273,12 +2273,12 @@ export default function register(api: OpenClawPluginApi) {
         const verifyResult = await verificationService.verifyStep(
           verifyToken,
           proofs,
-          event.toolName,
+          event.toolName
         );
         api.logger.info(
           `armoriq: verify-step result tool=${event.toolName} allowed=${
             verifyResult.allowed
-          } reason=${verifyResult.reason || "n/a"}`,
+          } reason=${verifyResult.reason || "n/a"}`
         );
         if (!verifyResult.allowed) {
           return {
@@ -2341,7 +2341,7 @@ export default function register(api: OpenClawPluginApi) {
         api.logger.info(
           `armoriq: plan check (cached token) tool=${event.toolName} steps=${
             Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
-          } status=${tokenCheck.blockReason ? "blocked" : "ok"}`,
+          } status=${tokenCheck.blockReason ? "blocked" : "ok"}`
         );
         if (tokenCheck.blockReason) {
           return { block: true, blockReason: tokenCheck.blockReason };
@@ -2353,7 +2353,7 @@ export default function register(api: OpenClawPluginApi) {
         const csrgResult = await verifyWithIap(
           cached.tokenRaw,
           tokenCheck.plan ?? {},
-          cached.executedStepIndices,
+          cached.executedStepIndices
         );
         if (csrgResult.block) {
           return csrgResult;

@@ -40,6 +40,7 @@ openclaw gateway run
 ### Testing Against Vanilla OpenClaw
 
 **Option 1: Global OpenClaw Install**
+
 ```bash
 # Install OpenClaw globally
 npm install -g openclaw
@@ -55,6 +56,7 @@ openclaw gateway run
 ```
 
 **Option 2: Local OpenClaw Clone**
+
 ```bash
 # Clone vanilla OpenClaw (separate from aiq-openclaw fork)
 cd /Users/rfievet3/projects

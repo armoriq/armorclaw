@@ -40,6 +40,7 @@ openclaw gateway run
 ## Reporting Issues
 
 Please use GitHub Issues and include:
+
 - OpenClaw version
 - Plugin version
 - Steps to reproduce
