@@ -247,7 +247,7 @@ ArmorClaw approval checkpoint before post tweets, post tweet replies, direct
 messages, media upload, monitor tweets, webhooks, and giveaway or bulk
 extraction jobs.
 
-Xquik is an independent third-party service. Not affiliated with X Corp.
+Xquik is an independent third-party service. Not affiliated with X Corp. "Twitter" and "X" are trademarks of X Corp.
 
 ## Policy Configuration
 
