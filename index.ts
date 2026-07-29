@@ -1323,7 +1323,7 @@ function parseToolsFromSystemPrompt(
   const tools: Array<{ name: string; description?: string }> = [];
 
   // Match tool definition blocks: "tool_name: description" or "- tool_name: description"
-  const linePattern = /^[-*]?\s*([a-z0-9_.:/-]+)\s*[:–-]\s*(.+)/gim;
+  const linePattern = /^[-*]?\s*([a-z0-9_.:/-]+)\s*[:—–-]\s*(.+)/gim;
   for (const match of systemPrompt.matchAll(linePattern)) {
     const name = match[1]?.trim();
     const description = match[2]?.trim();
@@ -1388,11 +1388,11 @@ async function buildPlanFromPrompt(params: {
   try {
     registerBuiltInApiProviders();
   } catch {
-    /* ignore - registry may already be populated */
+    /* ignore — registry may already be populated */
   }
 
   // Build a full Model descriptor. pi-ai requires api/baseUrl/contextWindow/etc.
-  // on top of provider+id - look them up from the built-in catalog.
+  // on top of provider+id — look them up from the built-in catalog.
   let model: Model<Api>;
   try {
     // getModel is strictly typed over the generated MODELS catalog; at runtime
@@ -1461,7 +1461,7 @@ async function buildPlanFromPrompt(params: {
   // Strip Markdown code-fence wrappers some providers emit around JSON
   // (Gemini emits ```json ... ```; Claude/OpenAI sometimes do too despite
   // "respond with JSON only" instructions). Try several extraction strategies
-  // and return the first one that parses as JSON - providers are inconsistent
+  // and return the first one that parses as JSON — providers are inconsistent
   // (truncated streams, stray prose before/after, missing closing fence).
   const candidates: string[] = [];
   const fencedClosed = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -2085,7 +2085,7 @@ export default function register(api: OpenClawPluginApi) {
         // means no plan/intent-token is ever created, which breaks the
         // dashboard (no plan row, no audit chain). Log loudly.
         api.logger.warn(
-          `armoriq: planning failed (runKey=${runKey}) - ${message}`,
+          `armoriq: planning failed (runKey=${runKey}) — ${message}`,
         );
         if (err instanceof Error && err.stack) {
           api.logger.warn(`armoriq: planning stack:\n${err.stack}`);
@@ -2164,7 +2164,7 @@ export default function register(api: OpenClawPluginApi) {
   // ── audit-on-success ────────────────────────────────────────────────────
   // Fire-and-forget audit log for every tool that actually executed (so the
   // backend's /iap/audit handler can flip the parent plan to "completed" once
-  // all steps succeed). policy_update is internal - skip it.
+  // all steps succeed). policy_update is internal — skip it.
   api.on("after_tool_call", async (event, ctx) => {
     try {
       const normalized = normalizeToolName(event.toolName);
@@ -2281,7 +2281,7 @@ export default function register(api: OpenClawPluginApi) {
           )}`,
         );
         // Fire-and-forget audit so the dashboard records the block. We don't
-        // await - the deny path must remain fast and never fail because the
+        // await — the deny path must remain fast and never fail because the
         // audit endpoint blipped.
         const cachedForBlock = planCache.get(runKey ?? "");
         const blockToken =
