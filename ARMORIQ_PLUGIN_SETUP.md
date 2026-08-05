@@ -133,22 +133,21 @@ Edit `~/.openclaw/openclaw.json` and add under `plugins.entries`:
 
 ### 5. Set Environment Variables
 
-Create a `.env` file in the openclaw root:
+No ArmorIQ endpoints are needed. The plugin derives them from `ARMORIQ_ENV`
+(production when unset), and the API key comes from
+`~/.armoriq/credentials.json`, which the installer writes when you sign in. So
+the only thing a `.env` in the openclaw root needs is your LLM provider key:
 
 ```bash
-# ArmorIQ 
-ARMORIQ_API_KEY=ak_live_...
-IAP_BACKEND_URL=https://customer-api.armoriq.ai
-CSRG_URL=https://customer-iap.armoriq.ai
-IAP_ENDPOINT=https://customer-iap.armoriq.ai
-PROXY_ENDPOINT=https://customer-proxy.armoriq.ai
-BACKEND_ENDPOINT=https://customer-api.armoriq.ai
-
 # LLM provider
 OPENAI_API_KEY=sk-proj-...
 # OR
 OPENROUTER_API_KEY=sk-or-...
 ```
+
+Set `ARMORIQ_API_KEY` only if you want to override the signed-in key, and set
+`ARMORIQ_ENV=staging` (or drop a `~/.armoriq/local-mode` file) only when
+pointing at a non-production stack.
 
 ### 6. Run the Gateway
 
@@ -163,13 +162,14 @@ pnpm dev gateway
 
 | Variable | Used By | Default | Purpose |
 |----------|---------|---------|---------|
-| `ARMORIQ_API_KEY` | Plugin config | none | API key for ArmorIQ services |
-| `IAP_BACKEND_URL` | `iap-verification.service.ts` | `https://customer-api.armoriq.ai` | IAP backend for intent tokens |
+| `ARMORIQ_API_KEY` | Plugin config | `~/.armoriq/credentials.json` | Overrides the signed-in key |
+| `ARMORIQ_ENV` | Plugin config (`index.ts`) | `production` | `production`, `staging`, or `local` |
+| `IAP_BACKEND_URL` | `iap-verification.service.ts` | `https://api.armoriq.ai` | IAP backend for intent tokens |
 | `CONMAP_AUTO_URL` | `iap-verification.service.ts` | (fallback for IAP) | Alternative IAP URL |
-| `CSRG_URL` | `crypto-policy.service.ts`, `iap-verification.service.ts` | `https://customer-iap.armoriq.ai` | CSRG cryptographic verification |
-| `IAP_ENDPOINT` | Plugin config (`index.ts`) | none | IAP endpoint (plugin-level) |
-| `PROXY_ENDPOINT` | Plugin config (`index.ts`) | none | Proxy endpoint |
-| `BACKEND_ENDPOINT` | Plugin config (`index.ts`) | none | Backend endpoint |
+| `CSRG_URL` | `crypto-policy.service.ts`, `iap-verification.service.ts` | `https://iap.armoriq.ai` | CSRG cryptographic verification |
+| `IAP_ENDPOINT` | Plugin config (`index.ts`) | env-derived | Override only |
+| `PROXY_ENDPOINT` | Plugin config (`index.ts`) | env-derived | Override only |
+| `BACKEND_ENDPOINT` | Plugin config (`index.ts`) | env-derived | Override only |
 | `REQUIRE_CSRG_PROOFS` | `iap-verification.service.ts` | `true` | Require CSRG proof headers |
 | `CSRG_VERIFY_ENABLED` | `iap-verification.service.ts` | `true` | Enable CSRG /verify/action |
 | `USER_ID` | Plugin config | none | Default user ID |

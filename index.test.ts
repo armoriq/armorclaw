@@ -110,7 +110,11 @@ async function fireLlmInput(
 }
 
 describe("ArmorIQ plugin", () => {
-  beforeEach(() => {
+  // Point HOME at a throwaway dir so a real ~/.armoriq/credentials.json on the
+  // machine running the tests can never leak a key into them.
+  let fakeHome = "";
+
+  beforeEach(async () => {
     completeSimpleMock.mockReset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -125,9 +129,14 @@ describe("ArmorIQ plugin", () => {
       }
     }
     process.env.REQUIRE_CSRG_PROOFS = "false";
+    fakeHome = await fs.mkdtemp(join(tmpdir(), "armorclaw-home-"));
+    process.env.HOME = fakeHome;
   });
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
+    if (fakeHome) {
+      await fs.rm(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it("captures a plan via llm_input and allows matching tool calls", async () => {
@@ -164,6 +173,47 @@ describe("ArmorIQ plugin", () => {
     register(api as any);
 
     const ctx = createCtx("run-missing-key");
+    const beforeToolCall = handlers.get("before_tool_call")?.[0];
+    const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
+    expect(result?.block).toBe(true);
+    expect(result?.blockReason).toContain("API key missing");
+  });
+
+  it("picks up the installer-written key from ~/.armoriq/credentials.json", async () => {
+    await fs.mkdir(join(fakeHome, ".armoriq"), { recursive: true });
+    await fs.writeFile(
+      join(fakeHome, ".armoriq", "credentials.json"),
+      JSON.stringify({ apiKey: "ak_live_from_credentials", email: "dev@armoriq.io" }),
+    );
+
+    const { api, handlers } = createApi({
+      enabled: true,
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    const ctx = createCtx("run-credentials-key");
+    const beforeToolCall = handlers.get("before_tool_call")?.[0];
+    const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
+    expect(result?.blockReason ?? "").not.toContain("API key missing");
+  });
+
+  it("ignores a credentials file that has no usable key", async () => {
+    await fs.mkdir(join(fakeHome, ".armoriq"), { recursive: true });
+    await fs.writeFile(
+      join(fakeHome, ".armoriq", "credentials.json"),
+      JSON.stringify({ email: "dev@armoriq.io" }),
+    );
+
+    const { api, handlers } = createApi({
+      enabled: true,
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    const ctx = createCtx("run-credentials-no-key");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
     expect(result?.block).toBe(true);

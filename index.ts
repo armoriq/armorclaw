@@ -5,6 +5,9 @@ import { ArmorIQClient } from "@armoriq/sdk";
 import { completeSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { CryptoPolicyService, computePolicyDigest } from "./src/crypto-policy.service.js";
 import { IAPVerificationService, type CsrgProofHeaders } from "./src/iap-verfication.service.js";
 import {
@@ -45,6 +48,8 @@ type ArmorIqConfig = {
   backendEndpoint?: string;
   proxyEndpoints?: Record<string, string>;
   timeoutMs?: number;
+  // Still accepted so existing configs keep validating, but the SDK dropped
+  // retry configuration, so we no longer pass it through.
   maxRetries?: number;
   verifySsl?: boolean;
   maxParamChars: number;
@@ -501,12 +506,83 @@ function parsePolicyTextCommand(text: string, state: PolicyState): PolicyCommand
   return { kind: "update", update: buildPolicyUpdateFromText(trimmed, state) };
 }
 
+function normalizeArmoriqEnv(value: unknown): "" | "production" | "staging" | "local" {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["production", "prod"].includes(normalized)) return "production";
+  if (["staging", "stage"].includes(normalized)) return "staging";
+  if (["development", "dev", "local", "test"].includes(normalized)) return "local";
+  return "";
+}
+
+// Endpoints are derived, never asked for. An API key on its own is enough to
+// run, same as armorClaude. ~/.armoriq/local-mode flips to a local stack
+// without any shell env gymnastics; delete it to go back to production.
+function resolveArmoriqEndpoints(): {
+  backendEndpoint: string;
+  iapEndpoint: string;
+  proxyEndpoint: string;
+  csrgEndpoint: string;
+} {
+  const localModeFile = path.join(os.homedir(), ".armoriq", "local-mode");
+  const requested = normalizeArmoriqEnv(process.env.ARMORIQ_ENV) || "production";
+  let activeEnv = requested;
+  try {
+    if (requested !== "local" && fs.existsSync(localModeFile)) {
+      activeEnv = "local";
+    }
+  } catch {
+    // unreadable home dir — stay on the requested env
+  }
+
+  if (activeEnv === "local") {
+    const backend = process.env.ARMORIQ_BACKEND_URL?.trim() || "http://127.0.0.1:3000";
+    const csrg = process.env.ARMORIQ_CSRG_URL?.trim() || "http://127.0.0.1:8080";
+    return {
+      backendEndpoint: backend,
+      iapEndpoint: csrg,
+      proxyEndpoint: process.env.ARMORIQ_PROXY_URL?.trim() || "http://127.0.0.1:3001",
+      csrgEndpoint: csrg,
+    };
+  }
+  if (activeEnv === "staging") {
+    return {
+      backendEndpoint: "https://staging-api.armoriq.ai",
+      iapEndpoint: "https://iap-staging.armoriq.ai",
+      proxyEndpoint: "https://cloud-run-proxy.armoriq.io",
+      csrgEndpoint: "https://iap-staging.armoriq.ai",
+    };
+  }
+  return {
+    backendEndpoint: "https://api.armoriq.ai",
+    iapEndpoint: "https://iap.armoriq.ai",
+    proxyEndpoint: "https://proxy.armoriq.ai",
+    csrgEndpoint: "https://iap.armoriq.ai",
+  };
+}
+
+// The installer signs the user in and writes the minted key here, so this is
+// the normal source of the key — config and env are the manual overrides.
+function readCredentialsApiKey(): string | undefined {
+  try {
+    const file = path.join(os.homedir(), ".armoriq", "credentials.json");
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { apiKey?: unknown };
+    const key = readString(parsed.apiKey);
+    return key && key.startsWith("ak_") ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
   const raw = readRecord(api.pluginConfig) ?? {};
   const enabled = readBoolean(raw.enabled) ?? false;
+  const endpoints = resolveArmoriqEndpoints();
   return {
     enabled,
-    apiKey: readString(raw.apiKey) ?? readString(process.env.ARMORIQ_API_KEY),
+    apiKey:
+      readString(raw.apiKey) ??
+      readString(process.env.ARMORIQ_API_KEY) ??
+      readCredentialsApiKey(),
     userId: readString(raw.userId) ?? readString(process.env.USER_ID),
     agentId: readString(raw.agentId) ?? readString(process.env.AGENT_ID),
     contextId: readString(raw.contextId) ?? readString(process.env.CONTEXT_ID),
@@ -526,12 +602,19 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
       readBoolean(raw.cryptoPolicyEnabled) ??
       readBoolean(process.env.ARMORIQ_CRYPTO_POLICY_ENABLED),
     csrgEndpoint:
-      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? "https://customer-iap.armoriq.ai",
+      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? endpoints.csrgEndpoint,
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
     useProduction: readBoolean(raw.useProduction),
-    iapEndpoint: readString(raw.iapEndpoint) ?? readString(process.env.IAP_ENDPOINT),
-    proxyEndpoint: readString(raw.proxyEndpoint) ?? readString(process.env.PROXY_ENDPOINT),
-    backendEndpoint: readString(raw.backendEndpoint) ?? readString(process.env.BACKEND_ENDPOINT),
+    iapEndpoint:
+      readString(raw.iapEndpoint) ?? readString(process.env.IAP_ENDPOINT) ?? endpoints.iapEndpoint,
+    proxyEndpoint:
+      readString(raw.proxyEndpoint) ??
+      readString(process.env.PROXY_ENDPOINT) ??
+      endpoints.proxyEndpoint,
+    backendEndpoint:
+      readString(raw.backendEndpoint) ??
+      readString(process.env.BACKEND_ENDPOINT) ??
+      endpoints.backendEndpoint,
     proxyEndpoints: readRecord(raw.proxyEndpoints) as Record<string, string> | undefined,
     timeoutMs: readNumber(raw.timeoutMs),
     maxRetries: readNumber(raw.maxRetries),
@@ -1474,7 +1557,6 @@ function getClient(cfg: ArmorIqConfig, ids: IdentityBundle): ArmorIQClient {
     backendEndpoint: cfg.backendEndpoint,
     proxyEndpoints: cfg.proxyEndpoints,
     timeout: cfg.timeoutMs,
-    maxRetries: cfg.maxRetries,
     verifySsl: cfg.verifySsl,
   });
   clientCache.set(key, client);
