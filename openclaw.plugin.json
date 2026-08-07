@@ -2,50 +2,125 @@
   "id": "armorclaw",
   "name": "ArmorClaw",
   "description": "Intent enforcement and audit integration via ArmorIQ",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": [
+      "hook"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean", "default": false },
-      "apiKey": { "type": "string" },
-      "userId": { "type": "string" },
-      "agentId": { "type": "string" },
-      "contextId": { "type": "string" },
+      "enabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "apiKey": {
+        "type": "string"
+      },
+      "userId": {
+        "type": "string"
+      },
+      "agentId": {
+        "type": "string"
+      },
+      "contextId": {
+        "type": "string"
+      },
       "userIdSource": {
         "type": "string",
-        "enum": ["senderE164", "senderId", "senderUsername", "senderName", "sessionKey", "agentId"]
+        "enum": [
+          "senderE164",
+          "senderId",
+          "senderUsername",
+          "senderName",
+          "sessionKey",
+          "agentId"
+        ]
       },
       "agentIdSource": {
         "type": "string",
-        "enum": ["agentId", "sessionKey"]
+        "enum": [
+          "agentId",
+          "sessionKey"
+        ]
       },
       "contextIdSource": {
         "type": "string",
-        "enum": ["sessionKey", "agentId", "channel", "accountId"]
+        "enum": [
+          "sessionKey",
+          "agentId",
+          "channel",
+          "accountId"
+        ]
       },
-      "policy": { "type": "object" },
-      "policyStorePath": { "type": "string" },
-      "policyUpdateEnabled": { "type": "boolean" },
+      "policy": {
+        "type": "object"
+      },
+      "policyStorePath": {
+        "type": "string"
+      },
+      "policyUpdateEnabled": {
+        "type": "boolean"
+      },
       "policyUpdateAllowList": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
-      "validitySeconds": { "type": "number" },
-      "useProduction": { "type": "boolean" },
-      "iapEndpoint": { "type": "string" },
-      "proxyEndpoint": { "type": "string" },
-      "backendEndpoint": { "type": "string" },
-      "proxyEndpoints": { "type": "object" },
-      "timeoutMs": { "type": "number" },
-      "maxRetries": { "type": "number" },
-      "verifySsl": { "type": "boolean" },
-      "maxParamChars": { "type": "number" },
-      "maxParamDepth": { "type": "number" },
-      "maxParamKeys": { "type": "number" },
-      "maxParamItems": { "type": "number" },
-      "cryptoPolicyEnabled": { "type": "boolean", "default": false },
-      "observabilityEnabled": { "type": "boolean", "default": true },
-      "csrgEndpoint": { "type": "string", "default": "https://iap.armoriq.ai" }
+      "validitySeconds": {
+        "type": "number"
+      },
+      "useProduction": {
+        "type": "boolean"
+      },
+      "iapEndpoint": {
+        "type": "string"
+      },
+      "proxyEndpoint": {
+        "type": "string"
+      },
+      "backendEndpoint": {
+        "type": "string"
+      },
+      "proxyEndpoints": {
+        "type": "object"
+      },
+      "timeoutMs": {
+        "type": "number"
+      },
+      "maxRetries": {
+        "type": "number"
+      },
+      "verifySsl": {
+        "type": "boolean"
+      },
+      "maxParamChars": {
+        "type": "number"
+      },
+      "maxParamDepth": {
+        "type": "number"
+      },
+      "maxParamKeys": {
+        "type": "number"
+      },
+      "maxParamItems": {
+        "type": "number"
+      },
+      "cryptoPolicyEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "observabilityEnabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "csrgEndpoint": {
+        "type": "string",
+        "default": "https://iap.armoriq.ai"
+      }
     }
   }
 }
