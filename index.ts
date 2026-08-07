@@ -1394,15 +1394,24 @@ async function buildPlanFromPrompt(params: {
 
   // Build a full Model descriptor. pi-ai requires api/baseUrl/contextWindow/etc.
   // on top of provider+id — look them up from the built-in catalog.
-  let model: Model<Api>;
+  let model: Model<Api> | undefined;
   try {
     // getModel is strictly typed over the generated MODELS catalog; at runtime
     // we pass dynamic strings so go through `unknown` to keep tsc happy.
-    model = (getModel as unknown as (p: string, m: string) => Model<Api>)(
+    model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
       params.provider,
       params.modelId,
     );
   } catch {
+    model = undefined;
+  }
+  // getModel RETURNS UNDEFINED for a model outside pi-ai's bundled catalog, it
+  // does not throw. Relying on the catch alone left `model` undefined and
+  // completeSimple died on `.api`, which killed planning for every model pi-ai
+  // does not know. OpenClaw's registry and pi-ai's catalog do not agree (e.g.
+  // gpt-5.4 is in OpenClaw but not pi-ai), so this is the common case, not an
+  // edge case.
+  if (!model) {
     // Fallback: minimal descriptor that at least has the api field set so
     // resolveApiProvider() can find the provider.
     const apiByProvider: Record<string, Api> = {
