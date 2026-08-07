@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { CryptoPolicyService, computePolicyDigest } from "./src/crypto-policy.service.js";
 import { IAPVerificationService, type CsrgProofHeaders } from "./src/iap-verfication.service.js";
+import { createObservability, OBSERVABILITY_PRODUCT } from "./src/observability.js";
 import {
   PolicyStore,
   PolicyUpdateSchema,
@@ -40,6 +41,7 @@ type ArmorIqConfig = {
   policyUpdateEnabled?: boolean;
   policyUpdateAllowList?: string[];
   cryptoPolicyEnabled?: boolean;
+  observabilityEnabled?: boolean;
   csrgEndpoint?: string;
   validitySeconds: number;
   useProduction?: boolean;
@@ -601,6 +603,11 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
     cryptoPolicyEnabled:
       readBoolean(raw.cryptoPolicyEnabled) ??
       readBoolean(process.env.ARMORIQ_CRYPTO_POLICY_ENABLED),
+    // Observability is on by default, matching armorClaude. Opt out with the
+    // config flag or ARMORIQ_OBSERVABILITY_DISABLED.
+    observabilityEnabled:
+      readBoolean(raw.observabilityEnabled) ??
+      (readBoolean(process.env.ARMORIQ_OBSERVABILITY_DISABLED) === true ? false : undefined),
     csrgEndpoint:
       readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? endpoints.csrgEndpoint,
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
@@ -1655,6 +1662,19 @@ export default function register(api: OpenClawPluginApi) {
       })
     : null;
 
+  const observability = createObservability({
+    enabled: cfg.observabilityEnabled !== false,
+    backendEndpoint: cfg.backendEndpoint ?? "",
+    apiKey: cfg.apiKey ?? "",
+    userId: cfg.userId,
+    agentId: cfg.agentId,
+    logger: api.logger,
+    debug: readBoolean(process.env.ARMORIQ_DEBUG) === true,
+  });
+  api.logger.info(
+    `armoriq: observability ${observability.active ? `enabled (product=${OBSERVABILITY_PRODUCT})` : "disabled"}`,
+  );
+
   const handleCryptoPolicyUpdate = async (state: {
     version: number;
     updatedAt: string;
@@ -1962,6 +1982,12 @@ export default function register(api: OpenClawPluginApi) {
     const runKey = resolveRunKey(llmCtx);
     if (!runKey || planCache.has(runKey)) return;
 
+    // One trace per agent turn, opened as soon as we know we are planning one.
+    observability.startRun(runKey, String(event.prompt ?? ""), {
+      "armorclaw.run_id": event.runId ?? null,
+      "armorclaw.session_key": llmCtx.sessionKey ?? null,
+    });
+
     const planPromise = (async () => {
       const toolCtx = buildToolContextFromCaches(llmCtx);
       const identity = resolveIdentities(cfg, toolCtx);
@@ -2046,6 +2072,10 @@ export default function register(api: OpenClawPluginApi) {
           planId: planId || undefined,
           jwtToken: jwtToken || undefined,
         });
+        observability.recordPlan(runKey, {
+          planId: planId || undefined,
+          steps: Array.isArray((tokenPlan as any)?.steps) ? (tokenPlan as any).steps.length : 0,
+        });
         const sessionId = event.sessionId?.trim();
         if (sessionId && runKey !== sessionId) {
           sessionKeyIndex.set(sessionId, runKey);
@@ -2069,6 +2099,7 @@ export default function register(api: OpenClawPluginApi) {
           createdAt: Date.now(),
           error: `ArmorIQ planning failed: ${message}`,
         });
+        observability.recordPlan(runKey, { steps: 0, error: message });
       }
     })();
 
@@ -2125,6 +2156,10 @@ export default function register(api: OpenClawPluginApi) {
       contextTokenExecutionCache.delete(runKey);
       planningPromises.delete(runKey);
     }
+
+    // Close the trace and ship it. A turn whose plan never came together is
+    // reported as an error so the dashboard distinguishes it from a clean run.
+    await observability.endRun(runKey, cached?.error ? "error" : "ok");
   });
 
   // ── audit-on-success ────────────────────────────────────────────────────
@@ -2179,7 +2214,14 @@ export default function register(api: OpenClawPluginApi) {
     }
   });
 
-  api.on("before_tool_call", async (event, ctx) => {
+  // The decision logic below has many early returns, so observability is
+  // attached by wrapping it at registration rather than at each exit. That
+  // keeps the enforcement path untouched and guarantees every outcome is
+  // reported exactly once.
+  const decideBeforeToolCall = async (
+    event: Parameters<Parameters<typeof api.on<"before_tool_call">>[1]>[0],
+    ctx: Parameters<Parameters<typeof api.on<"before_tool_call">>[1]>[1],
+  ): Promise<any> => {
     const normalizedTool = normalizeToolName(event.toolName);
     const toolCtx = buildToolContextFromCaches(ctx);
     const runKey = resolveRunKey(toolCtx);
@@ -2477,5 +2519,18 @@ export default function register(api: OpenClawPluginApi) {
       return policyResult;
     }
     return { params: event.params };
+  };
+
+  api.on("before_tool_call", async (event, ctx) => {
+    const result = await decideBeforeToolCall(event, ctx);
+    const runKey = resolveRunKey(buildToolContextFromCaches(ctx));
+    if (runKey) {
+      const blocked = Boolean(result?.block);
+      observability.recordToolDecision(runKey, normalizeToolName(event.toolName), {
+        allowed: !blocked,
+        reason: blocked ? String(result?.blockReason ?? "blocked") : null,
+      });
+    }
+    return result;
   });
 }

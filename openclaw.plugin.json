@@ -44,6 +44,7 @@
       "maxParamKeys": { "type": "number" },
       "maxParamItems": { "type": "number" },
       "cryptoPolicyEnabled": { "type": "boolean", "default": false },
+      "observabilityEnabled": { "type": "boolean", "default": true },
       "csrgEndpoint": { "type": "string", "default": "https://iap.armoriq.ai" }
     }
   }
