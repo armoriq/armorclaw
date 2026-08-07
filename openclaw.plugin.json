@@ -8,6 +8,11 @@
       "hook"
     ]
   },
+  "contracts": {
+    "tools": [
+      "policy_update"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
