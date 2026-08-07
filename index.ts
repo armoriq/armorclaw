@@ -1958,6 +1958,7 @@ export default function register(api: OpenClawPluginApi) {
     iapBaseUrl: cfg.backendEndpoint ?? cfg.iapEndpoint,
     timeoutMs: cfg.timeoutMs,
     logger: api.logger,
+    apiKey: cfg.apiKey,
   });
 
   // Cache sender identity from inbound messages
