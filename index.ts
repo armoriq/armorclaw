@@ -1269,6 +1269,40 @@ function checkIntentTokenPlan(params: {
   };
 }
 
+/**
+ * Take the tool list from the hook payload when OpenClaw provides it, and only
+ * fall back to scraping the system prompt when it does not.
+ *
+ * The scrape alone was near-useless on 2026.7.x: tools are passed as structured
+ * API parameters rather than described in prompt text, so the regex found
+ * nothing, the planner was told "(no tools available)", and it planned zero
+ * steps. Every subsequent tool call was then blocked as intent drift. The
+ * enforcement was right; the plan it enforced against was built blind.
+ */
+function resolveAvailableTools(event: {
+  tools?: unknown[];
+  systemPrompt?: string;
+}): { tools: Array<{ name: string; description?: string }>; source: string } {
+  const structured: Array<{ name: string; description?: string }> = [];
+  for (const raw of event.tools ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const t = raw as Record<string, unknown>;
+    // Tool shapes vary by provider: {name}, {function:{name}}, {name,description}.
+    const fn = readRecord(t.function);
+    const name = readString(t.name) ?? readString(fn?.name);
+    if (!name) continue;
+    const description = readString(t.description) ?? readString(fn?.description);
+    structured.push(description ? { name, description } : { name });
+  }
+  if (structured.length > 0) {
+    return { tools: structured, source: "hook payload" };
+  }
+  return {
+    tools: parseToolsFromSystemPrompt(event.systemPrompt),
+    source: "system prompt scrape",
+  };
+}
+
 function buildToolList(tools?: Array<{ name: string; description?: string }>): string {
   if (!tools || tools.length === 0) {
     return "- (no tools available)";
@@ -2015,7 +2049,15 @@ export default function register(api: OpenClawPluginApi) {
 
       try {
         await policyReady;
-        const tools = parseToolsFromSystemPrompt(event.systemPrompt);
+        const { tools, source: toolSource } = resolveAvailableTools(event);
+        // Log the count: a planner with no tools silently produces an empty
+        // plan, which then blocks everything. Make that visible rather than
+        // leaving it to be inferred from "Plan captured with 0 steps".
+        api.logger.info(
+          `armoriq: planner sees ${tools.length} tool(s) via ${toolSource}${
+            tools.length === 0 ? " — plan will be empty and every tool call blocked" : ""
+          }`,
+        );
         const authResult = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
           provider: event.provider,
         });

@@ -114,6 +114,7 @@ async function fireLlmInput(
   runId: string,
   prompt = "Read a file",
   systemPrompt = "Available tools:\n- read: Read files\n- send_email: Send email\n- write_file: Write file",
+  tools?: unknown[],
 ) {
   const handler = handlers.get("llm_input")?.[0];
   await handler?.(
@@ -126,6 +127,7 @@ async function fireLlmInput(
       prompt,
       historyMessages: [],
       imagesCount: 0,
+      ...(tools === undefined ? {} : { tools }),
     },
     { agentId: "agent-1", sessionKey: "session:test" },
   );
@@ -297,6 +299,57 @@ describe("ArmorIQ plugin", () => {
     const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("intent drift");
+  });
+
+  it("plans from the structured tool list when the hook provides one", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "exec", mcp: "openclaw" }],
+        metadata: { goal: "list files" },
+      }),
+    });
+
+    await fireInboundClaim(handlers);
+    // No tool names in the prompt text at all: the scrape would find nothing,
+    // so anything planned here had to come from the structured payload.
+    await fireLlmInput(handlers, "run-structured", "list the files in /tmp", "You are an agent.", [
+      { name: "exec", description: "Run a shell command" },
+      { function: { name: "read", description: "Read a file" } },
+    ]);
+
+    const planningPrompt = String(completeSimpleMock.mock.calls[0]?.[1]?.messages?.[0]?.content ?? "");
+    expect(planningPrompt).toContain("exec");
+    expect(planningPrompt).toContain("read");
+    expect(planningPrompt).not.toContain("(no tools available)");
+  });
+
+  it("falls back to scraping the system prompt when the hook sends no tools", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({ steps: [], metadata: { goal: "none" } }),
+    });
+
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-scrape", "Read a file");
+
+    const planningPrompt = String(completeSimpleMock.mock.calls[0]?.[1]?.messages?.[0]?.content ?? "");
+    expect(planningPrompt).toContain("read");
+    expect(planningPrompt).not.toContain("(no tools available)");
   });
 
   it("reports each tool decision to observability", async () => {
