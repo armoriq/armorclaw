@@ -1,6 +1,6 @@
 {
   "name": "@armoriq/armorclaw",
-  "version": "2026.8.0",
+  "version": "2026.8.1",
   "description": "ArmorClaw intent enforcement and security plugin for OpenClaw AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -21,7 +21,7 @@
     "build:install": "tsc && node scripts/install-extension.mjs"
   },
   "dependencies": {
-    "@armoriq/sdk": "0.6.7",
+    "@armoriq/sdk": "0.6.8",
     "@mariozechner/pi-ai": "^0.52.9",
     "@mariozechner/pi-coding-agent": "^0.52.9",
     "@sinclair/typebox": "^0.34.48",
