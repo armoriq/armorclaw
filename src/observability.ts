@@ -37,6 +37,13 @@ type TraceCtx = ReturnType<ObservabilityRecorder["startTrace"]>;
 type RunEntry = {
   recorder: ObservabilityRecorder;
   ctx: TraceCtx;
+  /**
+   * Decisions already recorded for this run. A blocked tool gets retried by the
+   * agent, and each retry re-ran the check, so one refused action shipped ~10
+   * identical policy_call spans. The dashboard wants "exec was refused", not
+   * the retry count.
+   */
+  seenDecisions: Set<string>;
 };
 
 export type ToolDecision = {
@@ -127,7 +134,7 @@ export function createObservability(opts: ObservabilityOptions): Observability {
           "armorclaw.agent_id": opts.agentId ?? null,
           ...(attributes ?? {}),
         });
-        runs.set(runKey, { recorder, ctx });
+        runs.set(runKey, { recorder, ctx, seenDecisions: new Set<string>() });
       });
     },
 
@@ -150,6 +157,10 @@ export function createObservability(opts: ObservabilityOptions): Observability {
     recordToolDecision(runKey, toolName, decision) {
       const entry = runs.get(runKey);
       if (!entry) return;
+      // Collapse agent retries of the same refused tool into one span.
+      const key = `${toolName}:${decision.allowed ? "allow" : `deny:${decision.reason ?? ""}`}`;
+      if (entry.seenDecisions.has(key)) return;
+      entry.seenDecisions.add(key);
       safe(() => {
         entry.recorder.recordPolicyCall(entry.ctx, {
           policyId: null,

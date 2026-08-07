@@ -95,6 +95,13 @@ type PlanCacheEntry = {
   plan: Record<string, unknown>;
   allowedActions: Set<string>;
   executedStepIndices: Set<number>;
+  /**
+   * Audit keys already written for this run. A blocked tool is retried by the
+   * agent, and every retry re-entered after_tool_call, so one refused action
+   * produced ~10 identical audit rows. Dashboard noise, backend load, and it
+   * buries the one event that mattered.
+   */
+  auditedKeys: Set<string>;
   createdAt: number;
   expiresAt?: number;
   error?: string;
@@ -2080,6 +2087,7 @@ export default function register(api: OpenClawPluginApi) {
           plan: { steps: [], metadata: { goal: "invalid" } },
           allowedActions: new Set(),
           executedStepIndices: new Set(),
+          auditedKeys: new Set<string>(),
           createdAt: Date.now(),
           error: "ArmorIQ identity missing (userId/agentId)",
         });
@@ -2159,6 +2167,7 @@ export default function register(api: OpenClawPluginApi) {
           plan: tokenPlan,
           allowedActions: extractAllowedActions(tokenPlan),
           executedStepIndices: new Set<number>(),
+          auditedKeys: new Set<string>(),
           createdAt: Date.now(),
           expiresAt:
             typeof tokenParsed?.expiresAt === "number"
@@ -2199,6 +2208,7 @@ export default function register(api: OpenClawPluginApi) {
           plan: { steps: [], metadata: { goal: "invalid" } },
           allowedActions: new Set(),
           executedStepIndices: new Set(),
+          auditedKeys: new Set<string>(),
           createdAt: Date.now(),
           error: `ArmorIQ planning failed: ${message}`,
         });
@@ -2282,6 +2292,16 @@ export default function register(api: OpenClawPluginApi) {
       const token = cached.jwtToken ?? cached.tokenRaw ?? "";
       if (!token) return;
       const isError = typeof event.error === "string" && event.error.length > 0;
+
+      // One refused action used to produce an audit row per agent retry. Record
+      // the first occurrence of a given tool+outcome in a run and drop the
+      // repeats: the security signal is "this was attempted and refused", not
+      // how many times the model retried before giving up.
+      const auditKey = `${normalized}:${isError ? `err:${String(event.error).slice(0, 120)}` : "ok"}`;
+      if (cached.auditedKeys.has(auditKey)) {
+        return;
+      }
+      cached.auditedKeys.add(auditKey);
       void verificationService
         .createAuditLog({
           token,
