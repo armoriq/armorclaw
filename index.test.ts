@@ -352,6 +352,50 @@ describe("ArmorIQ plugin", () => {
     expect(planningPrompt).not.toContain("(no tools available)");
   });
 
+  it("plans against the user message, not the untrusted metadata envelope", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "exec", mcp: "openclaw" }],
+        metadata: { goal: "list files" },
+      }),
+    });
+
+    // Exactly the shape a channel message arrives in.
+    const wrapped = [
+      "Conversation info (untrusted metadata):",
+      "```json",
+      '{ "message_id": "abc123", "channel": "telegram" }',
+      "```",
+      "",
+      "Sender (untrusted metadata):",
+      "```json",
+      '{ "label": "Someone" }',
+      "```",
+      "",
+      "list the files in the music folder",
+    ].join("\n");
+
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-envelope", wrapped, "You are an agent.", [
+      { name: "exec", description: "Run a shell command" },
+    ]);
+
+    const planningPrompt = String(
+      completeSimpleMock.mock.calls[0]?.[1]?.messages?.[0]?.content ?? "",
+    );
+    expect(planningPrompt).toContain("list the files in the music folder");
+    expect(planningPrompt).not.toContain("untrusted metadata");
+    expect(planningPrompt).not.toContain("message_id");
+  });
+
   it("reports each tool decision to observability", async () => {
     const { api, handlers } = createApi({
       enabled: true,

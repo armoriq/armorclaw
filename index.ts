@@ -1270,6 +1270,45 @@ function checkIntentTokenPlan(params: {
 }
 
 /**
+ * Strip the untrusted-metadata envelope OpenClaw prepends to inbound messages.
+ *
+ * A channel message arrives as:
+ *
+ *   Conversation info (untrusted metadata):
+ *   ```json
+ *   { ... }
+ *   ```
+ *
+ *   Sender (untrusted metadata):
+ *   ```json
+ *   { ... }
+ *   ```
+ *
+ *   the actual user message
+ *
+ * Planning against the whole blob meant the model mostly saw JSON, so it
+ * planned a bare reply. "list the files in the music folder" produced a plan of
+ * [message] and the agent's exec call was then blocked as drift: correct
+ * enforcement against a plan built from the wrong text.
+ *
+ * The blocks are explicitly untrusted, so dropping them is also the right call
+ * for prompt-injection: metadata should never steer the intent plan.
+ */
+function stripUntrustedMetadata(prompt: string): string {
+  // Repeated "<Label> (untrusted metadata):" followed by a fenced json block.
+  const block = /^\s*[^\n]*\(untrusted metadata\):\s*```json\s*[\s\S]*?```\s*/;
+  let out = prompt;
+  while (block.test(out)) {
+    const next = out.replace(block, "");
+    if (next === out) break;
+    out = next;
+  }
+  const trimmed = out.trim();
+  // If stripping consumed everything, the original is the best we have.
+  return trimmed.length > 0 ? trimmed : prompt;
+}
+
+/**
  * Take the tool list from the hook payload when OpenClaw provides it, and only
  * fall back to scraping the system prompt when it does not.
  *
@@ -2065,8 +2104,14 @@ export default function register(api: OpenClawPluginApi) {
         if (!apiKey) {
           throw new Error(`No API key available for provider ${event.provider}`);
         }
+        const userPrompt = stripUntrustedMetadata(String(event.prompt ?? ""));
+        if (userPrompt !== event.prompt) {
+          api.logger.info(
+            `armoriq: stripped untrusted metadata from prompt (${String(event.prompt).length} -> ${userPrompt.length} chars)`,
+          );
+        }
         const plan = await buildPlanFromPrompt({
-          prompt: event.prompt,
+          prompt: userPrompt,
           tools,
           provider: event.provider,
           modelId: event.model,
@@ -2128,6 +2173,12 @@ export default function register(api: OpenClawPluginApi) {
           planId: planId || undefined,
           steps: Array.isArray((tokenPlan as any)?.steps) ? (tokenPlan as any).steps.length : 0,
         });
+        // Name the planned actions. Without this a block is unreadable: you see
+        // "steps=2 status=blocked" and cannot tell whether the tool was legitimately
+        // absent from the plan (correct) or present and mismatched (a bug).
+        api.logger.info(
+          `armoriq: plan allows [${[...extractAllowedActions(tokenPlan)].join(", ") || "nothing"}]`,
+        );
         const sessionId = event.sessionId?.trim();
         if (sessionId && runKey !== sessionId) {
           sessionKeyIndex.set(sessionId, runKey);
@@ -2517,7 +2568,9 @@ export default function register(api: OpenClawPluginApi) {
         api.logger.info(
           `armoriq: plan check (cached token) tool=${event.toolName} steps=${
             Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
-          } status=${tokenCheck.blockReason ? "blocked" : "ok"}`,
+          } status=${tokenCheck.blockReason ? "blocked" : "ok"}${
+            tokenCheck.blockReason ? ` reason="${tokenCheck.blockReason}"` : ""
+          }`,
         );
         if (tokenCheck.blockReason) {
           return { block: true, blockReason: tokenCheck.blockReason };
