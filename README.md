@@ -21,9 +21,14 @@ curl -fsSL https://armoriq.ai/install-armorclaw.sh | bash
 
 ### Prerequisites
 
-- Node.js v22+, pnpm, Git
-- ArmorClaw API key from [claw.armoriq.ai](https://claw.armoriq.ai)
+- Node.js matching OpenClaw's engines range, plus pnpm and Git. The installer
+  checks this for you.
 - An LLM provider key (OpenAI, Anthropic, Gemini, or OpenRouter)
+
+The installer signs you in with a browser approval and stores the minted ArmorIQ
+key in `~/.armoriq/credentials.json`, so there is no key to copy by hand. If you
+would rather create one yourself, the API Keys page is at
+[tools.armoriq.ai](https://tools.armoriq.ai/tools/api-keys).
 
 ### Install (OpenClaw 2026.3.x — no patching required)
 
@@ -50,10 +55,17 @@ openclaw plugins list
 
 ## Configuration
 
-The installer writes this automatically. To review or edit, update `~/.openclaw/openclaw.json`. Endpoints depend on which key flavor you use:
+The installer writes this automatically. To review or edit, update `~/.openclaw/openclaw.json`.
 
-- **`ak_claw_…`** keys → ArmorClaw-dedicated backend (`armorclaw-api.armoriq.ai`). Proxy is **not** required for local-tool flows.
-- **`ak_live_…`** keys → ArmorIQ backend (`api.armoriq.ai`, `iap.armoriq.ai`, `proxy.armoriq.ai`).
+Endpoints are resolved by the SDK and should be left unset. Production resolves
+to `api.armoriq.ai` (backend), `iap.armoriq.ai` (IAP and CSRG) and
+`proxy.armoriq.ai`. Set them explicitly only when pointing at staging or a local
+stack, since a value written here overrides the SDK and will go stale if a host
+moves.
+
+The API key is read in this order: this config, then `ARMORIQ_API_KEY`, then
+`~/.armoriq/credentials.json`. The installer writes the credentials file, so
+leaving `apiKey` out of the config is the norm.
 
 ```json
 {
@@ -70,10 +82,7 @@ The installer writes this automatically. To review or edit, update `~/.openclaw/
           "userId": "your-user-id",
           "agentId": "openclaw-agent-001",
           "contextId": "default",
-          "policyStorePath": "~/.openclaw/armoriq.policy.json",
-          "iapEndpoint": "https://customer-iap.armoriq.ai",
-          "backendEndpoint": "https://armorclaw-api.armoriq.ai",
-          "apiKey": "ak_claw_xxx"
+          "policyStorePath": "~/.openclaw/armoriq.policy.json"
         }
       }
     }
@@ -88,7 +97,7 @@ All options live under `plugins.entries.armorclaw.config`:
 | Option | Required | Description |
 |--------|----------|-------------|
 | `enabled` | Yes | Enable/disable the plugin |
-| `apiKey` | Yes | Your ArmorClaw / ArmorIQ API key |
+| `apiKey` | No | ArmorIQ API key. Falls back to `ARMORIQ_API_KEY`, then `~/.armoriq/credentials.json` (what the installer writes) |
 | `userId` | Yes | User identifier |
 | `agentId` | Yes | Agent identifier |
 | `contextId` | No | Context identifier (default: `"default"`) |
@@ -97,10 +106,10 @@ All options live under `plugins.entries.armorclaw.config`:
 | `policyUpdateAllowList` | No | User IDs permitted to manage policies |
 | `policy` | No | Local policy rules (allow/deny) |
 | `policyStorePath` | No | Path to policy store file |
-| `iapEndpoint` | No | IAP endpoint (no default; also reads `IAP_ENDPOINT`) |
-| `csrgEndpoint` | No | CSRG endpoint (default: `https://customer-iap.armoriq.ai`; also reads `CSRG_URL`) |
-| `backendEndpoint` | No | Backend API — `https://armorclaw-api.armoriq.ai` for `ak_claw_*`, `https://api.armoriq.ai` for `ak_live_*` |
-| `proxyEndpoint` | No | Only required for `ak_live_*` (default: `https://proxy.armoriq.ai`) |
+| `iapEndpoint` | No | Override only. SDK-resolved otherwise (also reads `IAP_ENDPOINT`) |
+| `csrgEndpoint` | No | CSRG endpoint (default: `https://iap.armoriq.ai`; also reads `CSRG_URL`) |
+| `backendEndpoint` | No | Override only. SDK-resolved otherwise (also reads `BACKEND_ENDPOINT`) |
+| `proxyEndpoint` | No | Override only. SDK-resolved otherwise (also reads `PROXY_ENDPOINT`) |
 
 ### LLM credentials (OpenClaw 2026.3.x)
 
@@ -191,8 +200,10 @@ For maximum security, enable CSRG verification with Merkle tree proofs:
 ```bash
 export CSRG_VERIFY_ENABLED=true
 export REQUIRE_CSRG_PROOFS=true
-export CSRG_URL=https://customer-iap.armoriq.ai
 ```
+
+Both are already on by default, and `CSRG_URL` is derived from `ARMORIQ_ENV`, so
+set it only when pointing at a non-production stack.
 
 This provides tamper-proof verification that each tool execution matches the original intent.
 

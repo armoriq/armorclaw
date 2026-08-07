@@ -5,8 +5,12 @@ import { ArmorIQClient } from "@armoriq/sdk";
 import { completeSimple } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { CryptoPolicyService, computePolicyDigest } from "./src/crypto-policy.service.js";
 import { IAPVerificationService, type CsrgProofHeaders } from "./src/iap-verfication.service.js";
+import { createObservability, OBSERVABILITY_PRODUCT } from "./src/observability.js";
 import {
   PolicyStore,
   PolicyUpdateSchema,
@@ -37,6 +41,7 @@ type ArmorIqConfig = {
   policyUpdateEnabled?: boolean;
   policyUpdateAllowList?: string[];
   cryptoPolicyEnabled?: boolean;
+  observabilityEnabled?: boolean;
   csrgEndpoint?: string;
   validitySeconds: number;
   useProduction?: boolean;
@@ -45,6 +50,8 @@ type ArmorIqConfig = {
   backendEndpoint?: string;
   proxyEndpoints?: Record<string, string>;
   timeoutMs?: number;
+  // Still accepted so existing configs keep validating, but the SDK dropped
+  // retry configuration, so we no longer pass it through.
   maxRetries?: number;
   verifySsl?: boolean;
   maxParamChars: number;
@@ -501,12 +508,83 @@ function parsePolicyTextCommand(text: string, state: PolicyState): PolicyCommand
   return { kind: "update", update: buildPolicyUpdateFromText(trimmed, state) };
 }
 
+function normalizeArmoriqEnv(value: unknown): "" | "production" | "staging" | "local" {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["production", "prod"].includes(normalized)) return "production";
+  if (["staging", "stage"].includes(normalized)) return "staging";
+  if (["development", "dev", "local", "test"].includes(normalized)) return "local";
+  return "";
+}
+
+// Endpoints are derived, never asked for. An API key on its own is enough to
+// run, same as armorClaude. ~/.armoriq/local-mode flips to a local stack
+// without any shell env gymnastics; delete it to go back to production.
+function resolveArmoriqEndpoints(): {
+  backendEndpoint: string;
+  iapEndpoint: string;
+  proxyEndpoint: string;
+  csrgEndpoint: string;
+} {
+  const localModeFile = path.join(os.homedir(), ".armoriq", "local-mode");
+  const requested = normalizeArmoriqEnv(process.env.ARMORIQ_ENV) || "production";
+  let activeEnv = requested;
+  try {
+    if (requested !== "local" && fs.existsSync(localModeFile)) {
+      activeEnv = "local";
+    }
+  } catch {
+    // unreadable home dir — stay on the requested env
+  }
+
+  if (activeEnv === "local") {
+    const backend = process.env.ARMORIQ_BACKEND_URL?.trim() || "http://127.0.0.1:3000";
+    const csrg = process.env.ARMORIQ_CSRG_URL?.trim() || "http://127.0.0.1:8080";
+    return {
+      backendEndpoint: backend,
+      iapEndpoint: csrg,
+      proxyEndpoint: process.env.ARMORIQ_PROXY_URL?.trim() || "http://127.0.0.1:3001",
+      csrgEndpoint: csrg,
+    };
+  }
+  if (activeEnv === "staging") {
+    return {
+      backendEndpoint: "https://staging-api.armoriq.ai",
+      iapEndpoint: "https://iap-staging.armoriq.ai",
+      proxyEndpoint: "https://cloud-run-proxy.armoriq.io",
+      csrgEndpoint: "https://iap-staging.armoriq.ai",
+    };
+  }
+  return {
+    backendEndpoint: "https://api.armoriq.ai",
+    iapEndpoint: "https://iap.armoriq.ai",
+    proxyEndpoint: "https://proxy.armoriq.ai",
+    csrgEndpoint: "https://iap.armoriq.ai",
+  };
+}
+
+// The installer signs the user in and writes the minted key here, so this is
+// the normal source of the key — config and env are the manual overrides.
+function readCredentialsApiKey(): string | undefined {
+  try {
+    const file = path.join(os.homedir(), ".armoriq", "credentials.json");
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { apiKey?: unknown };
+    const key = readString(parsed.apiKey);
+    return key && key.startsWith("ak_") ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
   const raw = readRecord(api.pluginConfig) ?? {};
   const enabled = readBoolean(raw.enabled) ?? false;
+  const endpoints = resolveArmoriqEndpoints();
   return {
     enabled,
-    apiKey: readString(raw.apiKey) ?? readString(process.env.ARMORIQ_API_KEY),
+    apiKey:
+      readString(raw.apiKey) ??
+      readString(process.env.ARMORIQ_API_KEY) ??
+      readCredentialsApiKey(),
     userId: readString(raw.userId) ?? readString(process.env.USER_ID),
     agentId: readString(raw.agentId) ?? readString(process.env.AGENT_ID),
     contextId: readString(raw.contextId) ?? readString(process.env.CONTEXT_ID),
@@ -525,13 +603,25 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
     cryptoPolicyEnabled:
       readBoolean(raw.cryptoPolicyEnabled) ??
       readBoolean(process.env.ARMORIQ_CRYPTO_POLICY_ENABLED),
+    // Observability is on by default, matching armorClaude. Opt out with the
+    // config flag or ARMORIQ_OBSERVABILITY_DISABLED.
+    observabilityEnabled:
+      readBoolean(raw.observabilityEnabled) ??
+      (readBoolean(process.env.ARMORIQ_OBSERVABILITY_DISABLED) === true ? false : undefined),
     csrgEndpoint:
-      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? "https://customer-iap.armoriq.ai",
+      readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? endpoints.csrgEndpoint,
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
     useProduction: readBoolean(raw.useProduction),
-    iapEndpoint: readString(raw.iapEndpoint) ?? readString(process.env.IAP_ENDPOINT),
-    proxyEndpoint: readString(raw.proxyEndpoint) ?? readString(process.env.PROXY_ENDPOINT),
-    backendEndpoint: readString(raw.backendEndpoint) ?? readString(process.env.BACKEND_ENDPOINT),
+    iapEndpoint:
+      readString(raw.iapEndpoint) ?? readString(process.env.IAP_ENDPOINT) ?? endpoints.iapEndpoint,
+    proxyEndpoint:
+      readString(raw.proxyEndpoint) ??
+      readString(process.env.PROXY_ENDPOINT) ??
+      endpoints.proxyEndpoint,
+    backendEndpoint:
+      readString(raw.backendEndpoint) ??
+      readString(process.env.BACKEND_ENDPOINT) ??
+      endpoints.backendEndpoint,
     proxyEndpoints: readRecord(raw.proxyEndpoints) as Record<string, string> | undefined,
     timeoutMs: readNumber(raw.timeoutMs),
     maxRetries: readNumber(raw.maxRetries),
@@ -1474,7 +1564,6 @@ function getClient(cfg: ArmorIqConfig, ids: IdentityBundle): ArmorIQClient {
     backendEndpoint: cfg.backendEndpoint,
     proxyEndpoints: cfg.proxyEndpoints,
     timeout: cfg.timeoutMs,
-    maxRetries: cfg.maxRetries,
     verifySsl: cfg.verifySsl,
   });
   clientCache.set(key, client);
@@ -1572,6 +1661,19 @@ export default function register(api: OpenClawPluginApi) {
         logger: api.logger,
       })
     : null;
+
+  const observability = createObservability({
+    enabled: cfg.observabilityEnabled !== false,
+    backendEndpoint: cfg.backendEndpoint ?? "",
+    apiKey: cfg.apiKey ?? "",
+    userId: cfg.userId,
+    agentId: cfg.agentId,
+    logger: api.logger,
+    debug: readBoolean(process.env.ARMORIQ_DEBUG) === true,
+  });
+  api.logger.info(
+    `armoriq: observability ${observability.active ? `enabled (product=${OBSERVABILITY_PRODUCT})` : "disabled"}`,
+  );
 
   const handleCryptoPolicyUpdate = async (state: {
     version: number;
@@ -1880,6 +1982,12 @@ export default function register(api: OpenClawPluginApi) {
     const runKey = resolveRunKey(llmCtx);
     if (!runKey || planCache.has(runKey)) return;
 
+    // One trace per agent turn, opened as soon as we know we are planning one.
+    observability.startRun(runKey, String(event.prompt ?? ""), {
+      "armorclaw.run_id": event.runId ?? null,
+      "armorclaw.session_key": llmCtx.sessionKey ?? null,
+    });
+
     const planPromise = (async () => {
       const toolCtx = buildToolContextFromCaches(llmCtx);
       const identity = resolveIdentities(cfg, toolCtx);
@@ -1964,6 +2072,10 @@ export default function register(api: OpenClawPluginApi) {
           planId: planId || undefined,
           jwtToken: jwtToken || undefined,
         });
+        observability.recordPlan(runKey, {
+          planId: planId || undefined,
+          steps: Array.isArray((tokenPlan as any)?.steps) ? (tokenPlan as any).steps.length : 0,
+        });
         const sessionId = event.sessionId?.trim();
         if (sessionId && runKey !== sessionId) {
           sessionKeyIndex.set(sessionId, runKey);
@@ -1987,6 +2099,7 @@ export default function register(api: OpenClawPluginApi) {
           createdAt: Date.now(),
           error: `ArmorIQ planning failed: ${message}`,
         });
+        observability.recordPlan(runKey, { steps: 0, error: message });
       }
     })();
 
@@ -2043,6 +2156,10 @@ export default function register(api: OpenClawPluginApi) {
       contextTokenExecutionCache.delete(runKey);
       planningPromises.delete(runKey);
     }
+
+    // Close the trace and ship it. A turn whose plan never came together is
+    // reported as an error so the dashboard distinguishes it from a clean run.
+    await observability.endRun(runKey, cached?.error ? "error" : "ok");
   });
 
   // ── audit-on-success ────────────────────────────────────────────────────
@@ -2097,7 +2214,14 @@ export default function register(api: OpenClawPluginApi) {
     }
   });
 
-  api.on("before_tool_call", async (event, ctx) => {
+  // The decision logic below has many early returns, so observability is
+  // attached by wrapping it at registration rather than at each exit. That
+  // keeps the enforcement path untouched and guarantees every outcome is
+  // reported exactly once.
+  const decideBeforeToolCall = async (
+    event: Parameters<Parameters<typeof api.on<"before_tool_call">>[1]>[0],
+    ctx: Parameters<Parameters<typeof api.on<"before_tool_call">>[1]>[1],
+  ): Promise<any> => {
     const normalizedTool = normalizeToolName(event.toolName);
     const toolCtx = buildToolContextFromCaches(ctx);
     const runKey = resolveRunKey(toolCtx);
@@ -2395,5 +2519,18 @@ export default function register(api: OpenClawPluginApi) {
       return policyResult;
     }
     return { params: event.params };
+  };
+
+  api.on("before_tool_call", async (event, ctx) => {
+    const result = await decideBeforeToolCall(event, ctx);
+    const runKey = resolveRunKey(buildToolContextFromCaches(ctx));
+    if (runKey) {
+      const blocked = Boolean(result?.block);
+      observability.recordToolDecision(runKey, normalizeToolName(event.toolName), {
+        allowed: !blocked,
+        reason: blocked ? String(result?.blockReason ?? "blocked") : null,
+      });
+    }
+    return result;
   });
 }

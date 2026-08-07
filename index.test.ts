@@ -12,6 +12,10 @@ vi.mock("@mariozechner/pi-ai", () => ({
   completeSimple: (...args: unknown[]) => completeSimpleMock(...args),
 }));
 
+/** Traces the plugin emitted during a test, so enforcement tests can assert on
+ *  observability without a network. Reset per test by the beforeEach below. */
+const observedPolicyCalls: Array<Record<string, unknown>> = [];
+
 vi.mock("@armoriq/sdk", () => ({
   ArmorIQClient: class {
     capturePlan(_llm: string, _prompt: string, plan: Record<string, unknown>) {
@@ -22,6 +26,26 @@ vi.mock("@armoriq/sdk", () => ({
       return { expiresAt: Date.now() / 1000 + 60 };
     }
   },
+  // The plugin imports these for observability. Named ESM imports fail hard on
+  // a mock that omits them, so they have to be present here.
+  ObservabilityRecorder: class {
+    startTrace() {
+      return { traceId: "t", sessionId: null };
+    }
+    recordEvent() {
+      return {};
+    }
+    recordPolicyCall(_ctx: unknown, attrs: Record<string, unknown>) {
+      observedPolicyCalls.push(attrs);
+      return {};
+    }
+    endTrace() {}
+    async flush() {
+      return { accepted: 0, rejected: 0 };
+    }
+  },
+  isValidUuid: (v: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
 }));
 
 type HookName = "before_tool_call" | "agent_end" | "inbound_claim" | "before_prompt_build" | "llm_input";
@@ -110,7 +134,11 @@ async function fireLlmInput(
 }
 
 describe("ArmorIQ plugin", () => {
-  beforeEach(() => {
+  // Point HOME at a throwaway dir so a real ~/.armoriq/credentials.json on the
+  // machine running the tests can never leak a key into them.
+  let fakeHome = "";
+
+  beforeEach(async () => {
     completeSimpleMock.mockReset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -125,9 +153,15 @@ describe("ArmorIQ plugin", () => {
       }
     }
     process.env.REQUIRE_CSRG_PROOFS = "false";
+    observedPolicyCalls.length = 0;
+    fakeHome = await fs.mkdtemp(join(tmpdir(), "armorclaw-home-"));
+    process.env.HOME = fakeHome;
   });
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
+    if (fakeHome) {
+      await fs.rm(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it("captures a plan via llm_input and allows matching tool calls", async () => {
@@ -164,6 +198,47 @@ describe("ArmorIQ plugin", () => {
     register(api as any);
 
     const ctx = createCtx("run-missing-key");
+    const beforeToolCall = handlers.get("before_tool_call")?.[0];
+    const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
+    expect(result?.block).toBe(true);
+    expect(result?.blockReason).toContain("API key missing");
+  });
+
+  it("picks up the installer-written key from ~/.armoriq/credentials.json", async () => {
+    await fs.mkdir(join(fakeHome, ".armoriq"), { recursive: true });
+    await fs.writeFile(
+      join(fakeHome, ".armoriq", "credentials.json"),
+      JSON.stringify({ apiKey: "ak_live_from_credentials", email: "dev@armoriq.io" }),
+    );
+
+    const { api, handlers } = createApi({
+      enabled: true,
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    const ctx = createCtx("run-credentials-key");
+    const beforeToolCall = handlers.get("before_tool_call")?.[0];
+    const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
+    expect(result?.blockReason ?? "").not.toContain("API key missing");
+  });
+
+  it("ignores a credentials file that has no usable key", async () => {
+    await fs.mkdir(join(fakeHome, ".armoriq"), { recursive: true });
+    await fs.writeFile(
+      join(fakeHome, ".armoriq", "credentials.json"),
+      JSON.stringify({ email: "dev@armoriq.io" }),
+    );
+
+    const { api, handlers } = createApi({
+      enabled: true,
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    const ctx = createCtx("run-credentials-no-key");
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
     expect(result?.block).toBe(true);
@@ -222,6 +297,45 @@ describe("ArmorIQ plugin", () => {
     const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("intent drift");
+  });
+
+  it("reports each tool decision to observability", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "read", mcp: "openclaw" }],
+        metadata: { goal: "read a file" },
+      }),
+    });
+
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-obs", "Read a file");
+
+    const ctx = createCtx("run-obs");
+    const beforeToolCall = handlers.get("before_tool_call")?.[0];
+
+    await beforeToolCall?.({ toolName: "read", params: {} }, ctx);
+    await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
+
+    const decisions = observedPolicyCalls.map((c) => ({
+      tool: (c.input as { tool: string }).tool,
+      decision: c.decision,
+    }));
+    expect(decisions).toContainEqual({ tool: "read", decision: "allow" });
+    expect(decisions).toContainEqual({ tool: "web_fetch", decision: "deny" });
+
+    const denied = observedPolicyCalls.find(
+      (c) => (c.input as { tool: string }).tool === "web_fetch",
+    );
+    expect(denied?.reason).toContain("intent drift");
+    expect(denied?.enforcementAction).toBe("block");
   });
 
   it("allows tool call when cached plan matches and token is valid", async () => {

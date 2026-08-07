@@ -92,21 +92,15 @@ type JsonResponse<T> = {
   text: string;
 };
 
-// Production: https://customer-iap.armoriq.ai
-const DEFAULT_CSRG_URL = "https://customer-iap.armoriq.ai";
+const DEFAULT_CSRG_URL = "https://iap.armoriq.ai";
+const DEFAULT_BACKEND_URL = "https://api.armoriq.ai";
 
 function resolveIapBaseUrl(fallback?: string): string {
   const configured = process.env.IAP_BACKEND_URL || process.env.CONMAP_AUTO_URL;
   if (configured) {
     return configured;
   }
-  if (fallback) {
-    return fallback;
-  }
-  // Production: https://customer-api.armoriq.ai (Backend)
-  return (process.env.NODE_ENV || "").toLowerCase() === "production"
-    ? "https://customer-api.armoriq.ai"
-    : "https://customer-api.armoriq.ai";
+  return fallback || DEFAULT_BACKEND_URL;
 }
 
 function resolveCsrgBaseUrl(fallback?: string): string {
