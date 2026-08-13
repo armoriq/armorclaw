@@ -712,6 +712,98 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("intent plan missing");
   });
 
+  describe("session key drift between hooks", () => {
+    // Verbatim from a gateway run. OpenClaw reported "agent:main:main" to
+    // llm_input and "agent:main:telegram:default:direct:6193457473" to
+    // before_tool_call for the same runId, so the composite cache key missed
+    // and every tool was refused with "intent plan missing" while a valid
+    // token sat in the cache.
+    it("finds the plan when the sessionKey differs but the runId matches", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-keydrift-"));
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyStorePath: join(dir, "policy.json"),
+      });
+      register(api as any);
+      completeSimpleMock.mockResolvedValue({
+        content: JSON.stringify({
+          steps: [{ action: "exec", mcp: "openclaw" }],
+          metadata: { goal: "list files" },
+        }),
+      });
+      await fireInboundClaim(handlers);
+
+      const runId = "2f3fc873-9125-4463-8bf4-df366d4b3eb3";
+      const llmInput = handlers.get("llm_input")?.[0];
+      await llmInput?.(
+        {
+          runId,
+          sessionId: "session:test",
+          provider: "test",
+          model: "model",
+          systemPrompt: "",
+          prompt: "what are the 5 biggest files in /tmp",
+          historyMessages: [],
+          imagesCount: 0,
+          tools: [{ name: "exec" }],
+        },
+        { runId, agentId: "agent-1", sessionKey: "agent:main:main" },
+      );
+
+      const beforeToolCall = handlers.get("before_tool_call")?.[0];
+      const result = await beforeToolCall?.(
+        { toolName: "exec", params: {} },
+        {
+          runId,
+          agentId: "agent-1",
+          sessionKey: "agent:main:telegram:default:direct:6193457473",
+        },
+      );
+      expect(result?.blockReason ?? "").not.toContain("intent plan missing");
+    });
+
+    it("still refuses a tool call from a different run", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-keydrift2-"));
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyStorePath: join(dir, "policy.json"),
+      });
+      register(api as any);
+      completeSimpleMock.mockResolvedValue({
+        content: JSON.stringify({ steps: [{ action: "exec", mcp: "openclaw" }] }),
+      });
+      await fireInboundClaim(handlers);
+      const llmInput = handlers.get("llm_input")?.[0];
+      await llmInput?.(
+        {
+          runId: "run-aaaa",
+          sessionId: "session:test",
+          provider: "test",
+          model: "model",
+          systemPrompt: "",
+          prompt: "list files",
+          historyMessages: [],
+          imagesCount: 0,
+          tools: [{ name: "exec" }],
+        },
+        { runId: "run-aaaa", agentId: "agent-1", sessionKey: "agent:main:main" },
+      );
+      // The runId fallback must not let one turn's plan authorise another's.
+      const beforeToolCall = handlers.get("before_tool_call")?.[0];
+      const result = await beforeToolCall?.(
+        { toolName: "exec", params: {} },
+        { runId: "run-bbbb", agentId: "agent-1", sessionKey: "agent:main:other" },
+      );
+      expect(result?.blockReason ?? "").toContain("intent plan missing");
+    });
+  });
+
   describe("hidden execution tools", () => {
     // Verbatim from a gateway run under the Codex agent runtime: 22 OpenClaw
     // plugin tools, no exec/read/write anywhere. Codex owns its native tools,

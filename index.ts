@@ -150,6 +150,20 @@ Tool access enforcement:
 const clientCache = new Map<string, ArmorIQClient>();
 const planCache = new Map<string, PlanCacheEntry>();
 const sessionKeyIndex = new Map<string, string>();
+/**
+ * runId -> plan cache key.
+ *
+ * The cache key is `${sessionKey}::${runId}`, and OpenClaw does not report the
+ * same sessionKey to both hooks. A Telegram turn planned under
+ * "agent:main:main::<runId>" and then looked its plan up under
+ * "agent:main:telegram:default:direct:<chatId>::<runId>", missed, and every tool
+ * was refused with "intent plan missing" while a valid token sat in the cache.
+ *
+ * The runId is identical in both, and is a per-turn uuid, so it identifies the
+ * turn without widening anything: a plan still cannot be found from a different
+ * run, which is what the composite key was protecting against.
+ */
+const runIdIndex = new Map<string, string>();
 const contextTokenExecutionCache = new Map<string, ContextTokenExecutionEntry>();
 const senderIdentityCache = new Map<string, SenderIdentityEntry>();
 const planningPromises = new Map<string, Promise<void>>();
@@ -829,6 +843,25 @@ function resolveIdentities(cfg: ArmorIqConfig, ctx: ToolContext): IdentityBundle
     return null;
   }
   return { userId, agentId, contextId };
+}
+
+/**
+ * The key a turn's plan is actually stored under.
+ *
+ * OpenClaw does not report the same sessionKey to llm_input and
+ * before_tool_call, so the composite `${sessionKey}::${runId}` differs between
+ * planning and enforcement for one turn. Both the plan and the in-flight
+ * planning promise are stored under the planning key, so a mismatch means the
+ * lookup misses AND the wait for planning is skipped -- the plan is reported
+ * missing partly because nothing waited for it. Resolve through the aliases
+ * once, and use the result for every per-run map.
+ */
+function resolvePlanCacheKey(runKey: string, runId?: string): string {
+  if (planCache.has(runKey) || planningPromises.has(runKey)) return runKey;
+  const bySession = sessionKeyIndex.get(runKey);
+  if (bySession) return bySession;
+  const byRunId = runId?.trim() ? runIdIndex.get(runId.trim()) : undefined;
+  return byRunId ?? runKey;
 }
 
 function resolveRunKey(ctx: ToolContext): string | null {
@@ -2426,6 +2459,14 @@ export default function register(api: OpenClawPluginApi) {
     const runKey = resolveRunKey(llmCtx);
     if (!runKey || planCache.has(runKey)) return;
 
+    // Register the runId alias before anything can throw. The failure path also
+    // caches an entry, and a plan that is present but unreachable is reported as
+    // "intent plan missing", which is the one message that is never true.
+    const planRunId = event.runId?.trim();
+    if (planRunId) {
+      runIdIndex.set(planRunId, runKey);
+    }
+
     // One trace per agent turn, opened as soon as we know we are planning one.
     observability.startRun(runKey, String(event.prompt ?? ""), {
       "armorclaw.run_id": event.runId ?? null,
@@ -2632,8 +2673,11 @@ export default function register(api: OpenClawPluginApi) {
   api.on("agent_end", async (_event, ctx) => {
     const runKey = resolveRunKey(ctx as ToolContext);
     if (!runKey) return;
-    const indexed = sessionKeyIndex.get(runKey);
-    const cacheKey = indexed ?? runKey;
+    const endRunId = (ctx as ToolContext).runId?.trim() ?? "";
+    // Same alias resolution as the tool-call path: agent_end arrives with the
+    // channel-scoped sessionKey too, so without it the plan is never evicted and
+    // the trace is closed against an empty entry.
+    const cacheKey = resolvePlanCacheKey(runKey, endRunId);
     const cached = planCache.get(cacheKey);
 
     // Before evicting the plan from the cache, mark it complete on the backend
@@ -2666,15 +2710,13 @@ export default function register(api: OpenClawPluginApi) {
       }
     }
 
-    if (indexed) {
-      planCache.delete(indexed);
-      contextTokenExecutionCache.delete(indexed);
-      planningPromises.delete(indexed);
-      sessionKeyIndex.delete(runKey);
-    } else {
-      planCache.delete(runKey);
-      contextTokenExecutionCache.delete(runKey);
-      planningPromises.delete(runKey);
+    planCache.delete(cacheKey);
+    contextTokenExecutionCache.delete(cacheKey);
+    planningPromises.delete(cacheKey);
+    sessionKeyIndex.delete(runKey);
+    // The runId alias must go too, or the map grows for the life of the gateway.
+    if (endRunId) {
+      runIdIndex.delete(endRunId);
     }
 
     // Close the trace and ship it. A turn whose plan never came together is
@@ -2763,11 +2805,15 @@ export default function register(api: OpenClawPluginApi) {
       );
     }
 
-    // Await pending plan if llm_input planning is still in flight
-    const pending = planningPromises.get(runKey ?? "");
+    // Await pending plan if llm_input planning is still in flight. Resolved
+    // through the aliases: under session-key drift the promise is stored under
+    // the planning key, and skipping this wait is half the reason the plan then
+    // looks absent.
+    const planKey = runKey ? resolvePlanCacheKey(runKey, toolCtx.runId) : "";
+    const pending = planningPromises.get(planKey);
     if (pending) {
       try { await pending; } catch { /* errors are captured in planCache */ }
-      planningPromises.delete(runKey ?? "");
+      planningPromises.delete(planKey);
     }
 
     const policyCheck = async (): Promise<{ block: true; blockReason: string } | null> => {
@@ -2980,7 +3026,7 @@ export default function register(api: OpenClawPluginApi) {
       };
     }
 
-    const cached = planCache.get(runKey) ?? planCache.get(sessionKeyIndex.get(runKey) ?? "");
+    const cached = planCache.get(resolvePlanCacheKey(runKey, toolCtx.runId));
 
     if (!cached) {
       // A missing plan blocks every tool, and the cause is almost always a key
