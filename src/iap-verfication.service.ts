@@ -83,6 +83,8 @@ type IapVerificationOptions = {
   csrgVerifyEnabled?: boolean;
   timeoutMs?: number;
   logger?: LoggerLike;
+  /** Sent as X-API-Key. Without it the backend rejects audit writes with 401. */
+  apiKey?: string;
 };
 
 type JsonResponse<T> = {
@@ -123,6 +125,7 @@ async function postJson<T>(
   url: string,
   payload: Record<string, unknown>,
   timeoutMs: number,
+  apiKey?: string,
 ): Promise<JsonResponse<T>> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -131,6 +134,11 @@ async function postJson<T>(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // Without this the backend answers 401 "API key is required". Audit
+        // logging failed silently for exactly that reason: the call is
+        // fire-and-forget, so nothing surfaced to the user and the compliance
+        // trail simply did not exist.
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),   
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
@@ -162,6 +170,7 @@ export class IAPVerificationService {
   private readonly requireCsrgProofs: boolean;
   private readonly csrgVerifyEnabled: boolean;
   private readonly timeoutMs: number;
+  private readonly apiKey: string | undefined;
 
   constructor(options: IapVerificationOptions = {}) {
     this.logger = createLogger(options.logger);
@@ -174,6 +183,7 @@ export class IAPVerificationService {
       options.csrgVerifyEnabled ??
       (process.env.CSRG_VERIFY_ENABLED ?? "true").toLowerCase() !== "false";
     this.timeoutMs = options.timeoutMs ?? 30000;
+    this.apiKey = options.apiKey;
 
     if (!options.iapBaseUrl && this.iapBaseUrl.includes("localhost")) {
       this.logger.warn(
@@ -226,6 +236,7 @@ export class IAPVerificationService {
       `${this.iapBaseUrl}/iap/verify-step`,
       payload,
       this.timeoutMs,
+      this.apiKey,
     );
 
     if (response.ok && response.data) {
@@ -320,6 +331,7 @@ export class IAPVerificationService {
       `${this.iapBaseUrl}/iap/audit`,
       dto as unknown as Record<string, unknown>,
       this.timeoutMs,
+      this.apiKey,
     );
 
     if (!response.ok || !response.data) {

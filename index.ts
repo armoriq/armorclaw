@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { CryptoPolicyService, computePolicyDigest } from "./src/crypto-policy.service.js";
 import { IAPVerificationService, type CsrgProofHeaders } from "./src/iap-verfication.service.js";
-import { createObservability, OBSERVABILITY_PRODUCT } from "./src/observability.js";
+import { createObservability } from "./src/observability.js";
 import {
   PolicyStore,
   PolicyUpdateSchema,
@@ -42,6 +42,7 @@ type ArmorIqConfig = {
   policyUpdateAllowList?: string[];
   cryptoPolicyEnabled?: boolean;
   observabilityEnabled?: boolean;
+  plannerApiKey?: string;
   csrgEndpoint?: string;
   validitySeconds: number;
   useProduction?: boolean;
@@ -95,6 +96,13 @@ type PlanCacheEntry = {
   plan: Record<string, unknown>;
   allowedActions: Set<string>;
   executedStepIndices: Set<number>;
+  /**
+   * Audit keys already written for this run. A blocked tool is retried by the
+   * agent, and every retry re-entered after_tool_call, so one refused action
+   * produced ~10 identical audit rows. Dashboard noise, backend load, and it
+   * buries the one event that mattered.
+   */
+  auditedKeys: Set<string>;
   createdAt: number;
   expiresAt?: number;
   error?: string;
@@ -399,26 +407,63 @@ function inferPolicyDataClass(text: string): PolicyDataClass | undefined {
   return undefined;
 }
 
+// Words that are never a tool name. Without this, "block the exec tool" parses
+// as the tool "the", and "... tool." parses as the tool "." -- both of which
+// persist as a rule that looks real and matches nothing.
+const POLICY_TOOL_STOPWORDS = new Set([
+  "a",
+  "all",
+  "an",
+  "and",
+  "any",
+  "every",
+  "for",
+  "from",
+  "it",
+  "that",
+  "the",
+  "then",
+  "these",
+  "this",
+  "those",
+  "to",
+  "tool",
+  "tools",
+  "using",
+  "with",
+]);
+
+/** A tool name starts alphanumeric; trailing punctuation is sentence, not name. */
+function cleanPolicyToolName(raw: string | undefined): string | undefined {
+  const name = (raw ?? "").trim().replace(/[.,;:!?]+$/, "");
+  if (!/^[a-z0-9]/i.test(name)) {
+    return undefined;
+  }
+  return POLICY_TOOL_STOPWORDS.has(name.toLowerCase()) ? undefined : name;
+}
+
 function inferPolicyTool(text: string): string {
   const lower = text.toLowerCase();
   if (/(all\s+tools|any\s+tool|\*\b)/i.test(lower)) {
     return "*";
   }
-  const backtickMatch = text.match(/`([a-z0-9_.:-]+)`/i);
-  if (backtickMatch?.[1]) {
-    return backtickMatch[1];
-  }
-  const toolMatch = text.match(/\btool\s*[:=]?\s*([a-z0-9_.:-]+)/i);
-  if (toolMatch?.[1]) {
-    return toolMatch[1];
-  }
-  const actionMatch = text.match(/\b(block|deny|allow|disallow|permit|require)\s+([a-z0-9_.:-]+)/i);
-  if (actionMatch?.[2]) {
-    return actionMatch[2];
-  }
-  const forMatch = text.match(/\bfor\s+([a-z0-9_.:-]+)\s+tool\b/i);
-  if (forMatch?.[1]) {
-    return forMatch[1];
+  // Ordered most-explicit first. Each candidate is validated, and a rejected
+  // match falls through to the next form rather than ending the search.
+  const patterns: RegExp[] = [
+    /`([a-z0-9_.:-]+)`/i,
+    /\btool\s*[:=]\s*([a-z0-9][a-z0-9_.:-]*)/i,
+    /\bfor\s+([a-z0-9][a-z0-9_.:-]*)\s+tool\b/i,
+    // "the exec tool" / "exec tool" -- the name sits before the noun.
+    /\b([a-z0-9][a-z0-9_.:-]*)\s+tool\b/i,
+    // "block exec" / "deny the exec" -- articles are skipped, not captured.
+    /\b(?:block|deny|allow|disallow|permit|require)\s+(?:the|a|an)?\s*([a-z0-9][a-z0-9_.:-]*)/i,
+    /\btool\s+([a-z0-9][a-z0-9_.:-]*)/i,
+  ];
+  for (const pattern of patterns) {
+    const cleaned = cleanPolicyToolName(text.match(pattern)?.[1]);
+    if (cleaned) {
+      return cleaned;
+    }
   }
   return "*";
 }
@@ -608,6 +653,13 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
     observabilityEnabled:
       readBoolean(raw.observabilityEnabled) ??
       (readBoolean(process.env.ARMORIQ_OBSERVABILITY_DISABLED) === true ? false : undefined),
+    // An explicit key for the planner's own LLM call, independent of whatever
+    // credential the host happens to resolve for the provider. See the call
+    // site for why the host's answer cannot be trusted on its own.
+    plannerApiKey:
+      readString(raw.plannerApiKey) ??
+      readString(process.env.ARMORIQ_PLANNER_API_KEY) ??
+      readString(process.env.OPENAI_API_KEY),
     csrgEndpoint:
       readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? endpoints.csrgEndpoint,
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
@@ -1269,6 +1321,79 @@ function checkIntentTokenPlan(params: {
   };
 }
 
+/**
+ * Strip the untrusted-metadata envelope OpenClaw prepends to inbound messages.
+ *
+ * A channel message arrives as:
+ *
+ *   Conversation info (untrusted metadata):
+ *   ```json
+ *   { ... }
+ *   ```
+ *
+ *   Sender (untrusted metadata):
+ *   ```json
+ *   { ... }
+ *   ```
+ *
+ *   the actual user message
+ *
+ * Planning against the whole blob meant the model mostly saw JSON, so it
+ * planned a bare reply. "list the files in the music folder" produced a plan of
+ * [message] and the agent's exec call was then blocked as drift: correct
+ * enforcement against a plan built from the wrong text.
+ *
+ * The blocks are explicitly untrusted, so dropping them is also the right call
+ * for prompt-injection: metadata should never steer the intent plan.
+ */
+function stripUntrustedMetadata(prompt: string): string {
+  // Repeated "<Label> (untrusted metadata):" followed by a fenced json block.
+  const block = /^\s*[^\n]*\(untrusted metadata\):\s*```json\s*[\s\S]*?```\s*/;
+  let out = prompt;
+  while (block.test(out)) {
+    const next = out.replace(block, "");
+    if (next === out) break;
+    out = next;
+  }
+  const trimmed = out.trim();
+  // If stripping consumed everything, the original is the best we have.
+  return trimmed.length > 0 ? trimmed : prompt;
+}
+
+/**
+ * Take the tool list from the hook payload when OpenClaw provides it, and only
+ * fall back to scraping the system prompt when it does not.
+ *
+ * The scrape alone was near-useless on 2026.7.x: tools are passed as structured
+ * API parameters rather than described in prompt text, so the regex found
+ * nothing, the planner was told "(no tools available)", and it planned zero
+ * steps. Every subsequent tool call was then blocked as intent drift. The
+ * enforcement was right; the plan it enforced against was built blind.
+ */
+function resolveAvailableTools(event: {
+  tools?: unknown[];
+  systemPrompt?: string;
+}): { tools: Array<{ name: string; description?: string }>; source: string } {
+  const structured: Array<{ name: string; description?: string }> = [];
+  for (const raw of event.tools ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const t = raw as Record<string, unknown>;
+    // Tool shapes vary by provider: {name}, {function:{name}}, {name,description}.
+    const fn = readRecord(t.function);
+    const name = readString(t.name) ?? readString(fn?.name);
+    if (!name) continue;
+    const description = readString(t.description) ?? readString(fn?.description);
+    structured.push(description ? { name, description } : { name });
+  }
+  if (structured.length > 0) {
+    return { tools: structured, source: "hook payload" };
+  }
+  return {
+    tools: parseToolsFromSystemPrompt(event.systemPrompt),
+    source: "system prompt scrape",
+  };
+}
+
 function buildToolList(tools?: Array<{ name: string; description?: string }>): string {
   if (!tools || tools.length === 0) {
     return "- (no tools available)";
@@ -1348,12 +1473,76 @@ function parseToolsFromSystemPrompt(
   return tools;
 }
 
+/**
+ * Find an api_key credential for a provider in OpenClaw's own auth-profile
+ * stores.
+ *
+ * Only used when the host hands the planner an OAuth credential it cannot use.
+ * The host resolves one credential per provider and has no way to know the
+ * planner needs a key specifically, so this reads the store it already wrote --
+ * agent-scoped first, since that shadows the root one -- rather than asking the
+ * user to configure the same key a second time.
+ */
+function findHostApiKeyProfile(provider: string): string | undefined {
+  const home = process.env.HOME || "";
+  if (!home) return undefined;
+  const stores = [
+    path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json"),
+    path.join(home, ".openclaw", "auth-profiles.json"),
+  ];
+  for (const file of stores) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        profiles?: Record<string, { type?: string; provider?: string; key?: string; apiKey?: string }>;
+      };
+      for (const entry of Object.values(parsed.profiles ?? {})) {
+        if (entry?.type !== "api_key" || entry.provider !== provider) continue;
+        const key = entry.key ?? entry.apiKey;
+        if (typeof key === "string" && key.length > 0) return key;
+      }
+    } catch {
+      // Missing or unreadable store: try the next one.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The wire API a provider/model pair speaks.
+ *
+ * Needed in two places: to synthesise a descriptor for a model pi-ai does not
+ * bundle, and to tell OpenClaw's credential resolver which API the planner is
+ * about to call. The second one matters more than it looks -- see the call site.
+ */
+const PLANNER_API_BY_PROVIDER: Record<string, Api> = {
+  openai: "openai-responses",
+  anthropic: "anthropic-messages",
+  google: "google-generative-ai",
+  "google-vertex": "google-vertex",
+  "azure-openai-responses": "azure-openai-responses",
+};
+
+function resolvePlannerModelApi(provider: string, modelId: string): Api {
+  let bundled: Model<Api> | undefined;
+  try {
+    bundled = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
+      provider,
+      modelId,
+    );
+  } catch {
+    bundled = undefined;
+  }
+  return bundled?.api ?? PLANNER_API_BY_PROVIDER[provider] ?? "openai-responses";
+}
+
 async function buildPlanFromPrompt(params: {
   prompt: string;
   tools?: Array<{ name: string; description?: string }>;
   provider: string;
   modelId: string;
   apiKey: string;
+  /** "oauth" | "api_key" | "". Used only to explain an auth failure. */
+  credentialMode?: string;
   log: (message: string) => void;
 }): Promise<Record<string, unknown>> {
   const toolDescriptions = new Map<string, string>();
@@ -1394,36 +1583,64 @@ async function buildPlanFromPrompt(params: {
 
   // Build a full Model descriptor. pi-ai requires api/baseUrl/contextWindow/etc.
   // on top of provider+id — look them up from the built-in catalog.
-  let model: Model<Api>;
+  let model: Model<Api> | undefined;
   try {
     // getModel is strictly typed over the generated MODELS catalog; at runtime
     // we pass dynamic strings so go through `unknown` to keep tsc happy.
-    model = (getModel as unknown as (p: string, m: string) => Model<Api>)(
+    model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
       params.provider,
       params.modelId,
     );
   } catch {
-    // Fallback: minimal descriptor that at least has the api field set so
-    // resolveApiProvider() can find the provider.
-    const apiByProvider: Record<string, Api> = {
-      openai: "openai-responses",
-      anthropic: "anthropic-messages",
-      google: "google-generative-ai",
-      "google-vertex": "google-vertex",
-      "azure-openai-responses": "azure-openai-responses",
+    model = undefined;
+  }
+  // getModel RETURNS UNDEFINED for a model outside pi-ai's bundled catalog, it
+  // does not throw. Relying on the catch alone left `model` undefined and
+  // completeSimple died on `.api`, which killed planning for every model pi-ai
+  // does not know. OpenClaw's registry and pi-ai's catalog do not agree (e.g.
+  // gpt-5.4 is in OpenClaw but not pi-ai), so this is the common case, not an
+  // edge case.
+  if (!model) {
+    // Fallback descriptor for a model pi-ai does not bundle. Every field here
+    // has to be usable, not merely present: this synthesised model is what the
+    // planner call actually runs on.
+    //
+    // baseUrl used to be "", which is why planning returned "Planner returned
+    // empty response" for anything outside pi-ai's catalog. A real descriptor
+    // carries the provider's API root (openai -> https://api.openai.com/v1), so
+    // an empty string sent the request nowhere.
+    const baseUrlByProvider: Record<string, string> = {
+      openai: "https://api.openai.com/v1",
+      anthropic: "https://api.anthropic.com",
+      google: "https://generativelanguage.googleapis.com",
+      openrouter: "https://openrouter.ai/api/v1",
     };
+    // Borrow the shape of a known model from the same provider when we can, so
+    // fields we do not enumerate here stay realistic.
+    let sibling: Model<Api> | undefined;
+    try {
+      sibling = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
+        params.provider,
+        params.provider === "openai" ? "gpt-5.2" : "",
+      );
+    } catch {
+      sibling = undefined;
+    }
     model = {
       id: params.modelId,
       name: params.modelId,
-      api: apiByProvider[params.provider] ?? "openai-responses",
+      api: sibling?.api ?? PLANNER_API_BY_PROVIDER[params.provider] ?? "openai-responses",
       provider: params.provider,
-      baseUrl: "",
+      baseUrl: sibling?.baseUrl ?? baseUrlByProvider[params.provider] ?? "https://api.openai.com/v1",
       reasoning: false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000,
+      contextWindow: sibling?.contextWindow ?? 128000,
       maxTokens: 4096,
     } as Model<Api>;
+    params.log(
+      `armoriq: model ${params.provider}/${params.modelId} not in the bundled catalog; using ${model.baseUrl}`,
+    );
   }
   const response = await completeSimple(
     model as never,
@@ -1456,7 +1673,32 @@ async function buildPlanFromPrompt(params: {
         : "";
 
   if (!text) {
-    throw new Error("Planner returned empty response");
+    // "empty response" on its own is undiagnosable: it cannot distinguish a
+    // refusal, a truncated reasoning budget, a content shape we do not parse,
+    // or a provider error. Carry the facts that separate them.
+    const blocks = Array.isArray(content) ? content : [];
+    const kinds = blocks.map((b) => (b as { type?: string })?.type ?? "?").join(",");
+    const providerError = String(
+      (response as { errorMessage?: unknown }).errorMessage ?? "",
+    ).slice(0, 300);
+    // An OAuth credential is the common cause and the least obvious one. A
+    // ChatGPT OAuth token carries no api.responses.write scope, so the planner
+    // call 401s while the account's real API key would have worked. Say so,
+    // rather than leaving the operator to decode "insufficient permissions".
+    if (params.credentialMode === "oauth" && /scope|permission/i.test(providerError)) {
+      throw new Error(
+        `Planner auth failed: the resolved credential for ${params.provider} is an OAuth token, ` +
+          `which lacks the scope the planner needs. Configure an API key for ${params.provider} ` +
+          `(openclaw auth) so planning does not fall back to OAuth. Provider said: ${providerError}`,
+      );
+    }
+    throw new Error(
+      `Planner returned empty response (model=${params.provider}/${params.modelId} ` +
+        `promptChars=${planningPrompt.length} stopReason=${
+          String((response as { stopReason?: unknown }).stopReason ?? "?")
+        } contentType=${Array.isArray(content) ? `array[${blocks.length}]` : typeof content} ` +
+        `blockKinds=${kinds || "none"}${providerError ? ` providerError="${providerError}"` : ""})`,
+    );
   }
 
   // Strip Markdown code-fence wrappers some providers emit around JSON
@@ -1646,6 +1888,59 @@ function sanitizeParams(
   return isPlainObject(sanitized) ? sanitized : {};
 }
 
+/**
+ * register() runs once per agent scope, so anything logged there repeats. The
+ * banner is a startup signal for a person reading the gateway come up, not a
+ * per-scope event, so it is emitted once per process.
+ */
+let startupBannerShown = false;
+
+/**
+ * Colour only when a terminal is attached. Gateway logs are routinely piped to
+ * files and journald, where escape codes are noise.
+ */
+function paint(code: string, text: string): string {
+  return process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text;
+}
+
+/**
+ * Say plainly whether ArmorIQ is enforcing.
+ *
+ * "observability enabled" was the only startup line, which answers a question
+ * nobody asked: it reports telemetry, not protection, so a gateway that loaded
+ * the plugin but could not enforce looked identical to one that could.
+ */
+function logStartupBanner(
+  api: OpenClawPluginApi,
+  cfg: ArmorIqConfig,
+  details: { observabilityActive: boolean; policyPath: string },
+): void {
+  if (startupBannerShown) return;
+  startupBannerShown = true;
+
+  // Without a key there is no intent token, and without a token nothing is
+  // verified. The plugin is loaded but it is not protecting anything.
+  const connected = Boolean(cfg.apiKey);
+  if (connected) {
+    api.logger.info(
+      `armoriq: ${paint("1;32", "● ArmorIQ ACTIVE")} ${paint("32", "— intent enforcement ON")}`,
+    );
+  } else {
+    api.logger.warn(
+      `armoriq: ${paint("1;33", "● ArmorIQ LOADED, NOT ENFORCING")} ${paint("33", "— no API key")}`,
+    );
+    api.logger.warn("armoriq:   run `armoriq login`, then restart the gateway");
+  }
+
+  const facts = [
+    `agent=${cfg.agentId ?? "unset"}`,
+    `user=${cfg.userId ?? "unset"}`,
+    `policy=${details.policyPath}`,
+    `observability=${details.observabilityActive ? "on" : "off"}`,
+  ];
+  api.logger.info(`armoriq:   ${paint("2", facts.join("  "))}`);
+}
+
 export default function register(api: OpenClawPluginApi) {
   const cfg = resolveConfig(api);
 
@@ -1671,9 +1966,10 @@ export default function register(api: OpenClawPluginApi) {
     logger: api.logger,
     debug: readBoolean(process.env.ARMORIQ_DEBUG) === true,
   });
-  api.logger.info(
-    `armoriq: observability ${observability.active ? `enabled (product=${OBSERVABILITY_PRODUCT})` : "disabled"}`,
-  );
+  logStartupBanner(api, cfg, {
+    observabilityActive: observability.active,
+    policyPath: resolvePolicyStorePath(api, cfg),
+  });
 
   const handleCryptoPolicyUpdate = async (state: {
     version: number;
@@ -1949,6 +2245,7 @@ export default function register(api: OpenClawPluginApi) {
     iapBaseUrl: cfg.backendEndpoint ?? cfg.iapEndpoint,
     timeoutMs: cfg.timeoutMs,
     logger: api.logger,
+    apiKey: cfg.apiKey,
   });
 
   // Cache sender identity from inbound messages
@@ -1997,6 +2294,7 @@ export default function register(api: OpenClawPluginApi) {
           plan: { steps: [], metadata: { goal: "invalid" } },
           allowedActions: new Set(),
           executedStepIndices: new Set(),
+          auditedKeys: new Set<string>(),
           createdAt: Date.now(),
           error: "ArmorIQ identity missing (userId/agentId)",
         });
@@ -2005,20 +2303,71 @@ export default function register(api: OpenClawPluginApi) {
 
       try {
         await policyReady;
-        const tools = parseToolsFromSystemPrompt(event.systemPrompt);
-        const authResult = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
+        const { tools, source: toolSource } = resolveAvailableTools(event);
+        // Log the count: a planner with no tools silently produces an empty
+        // plan, which then blocks everything. Make that visible rather than
+        // leaving it to be inferred from "Plan captured with 0 steps".
+        api.logger.info(
+          `armoriq: planner sees ${tools.length} tool(s) via ${toolSource}${
+            tools.length === 0 ? " — plan will be empty and every tool call blocked" : ""
+          }`,
+        );
+        // The host's credential for a provider is not necessarily usable for
+        // the API the planner calls. OpenClaw resolves one credential per
+        // provider, and on a machine where the codex runtime has synced
+        // ~/.codex/auth.json it hands back a ChatGPT OAuth token for "openai".
+        // That token carries no api.responses.write scope, so every planner
+        // call 401s and every plan comes back empty -- which surfaces as the
+        // agent refusing ordinary requests.
+        //
+        // OpenClaw does guard against this (isAuthModeAllowedForModel skips
+        // OAuth profiles when modelApi says the API needs a key), but the
+        // plugin runtime forwards only { provider, cfg, workspaceDir } to the
+        // resolver, so modelApi never arrives and the guard cannot fire for a
+        // plugin. modelApi is passed anyway: harmless now, correct if that
+        // whitelist is widened. Until then an explicit key is the only way a
+        // plugin can be sure of what it is authenticating with.
+        const hostAuth = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
           provider: event.provider,
+          modelApi: resolvePlannerModelApi(event.provider, event.model),
         });
-        const apiKey = typeof authResult === "string" ? authResult : authResult?.apiKey ?? authResult?.key;
+        const hostKey = typeof hostAuth === "string" ? hostAuth : hostAuth?.apiKey ?? hostAuth?.key;
+        const hostMode =
+          typeof hostAuth === "object" && hostAuth
+            ? String((hostAuth as { mode?: unknown }).mode ?? "")
+            : "";
+        // An OAuth credential is the case known to fail, so look for a real key:
+        // the explicitly configured one first, then whatever the host already
+        // stored for this provider. Any other mode leaves the host in charge.
+        let apiKey = hostKey || cfg.plannerApiKey;
+        let credentialMode = hostMode;
+        if (hostMode === "oauth") {
+          const replacement = cfg.plannerApiKey ?? findHostApiKeyProfile(event.provider);
+          if (replacement) {
+            apiKey = replacement;
+            credentialMode = "api_key";
+            api.logger.info(
+              `armoriq: host resolved an OAuth credential for ${event.provider}, which cannot ` +
+                "call the planner API; using an API key instead",
+            );
+          }
+        }
         if (!apiKey) {
           throw new Error(`No API key available for provider ${event.provider}`);
         }
+        const userPrompt = stripUntrustedMetadata(String(event.prompt ?? ""));
+        if (userPrompt !== event.prompt) {
+          api.logger.info(
+            `armoriq: stripped untrusted metadata from prompt (${String(event.prompt).length} -> ${userPrompt.length} chars)`,
+          );
+        }
         const plan = await buildPlanFromPrompt({
-          prompt: event.prompt,
+          prompt: userPrompt,
           tools,
           provider: event.provider,
           modelId: event.model,
           apiKey,
+          credentialMode,
           log: (message) => api.logger.info(message),
         });
         const planRecord = plan as Record<string, unknown>;
@@ -2062,6 +2411,7 @@ export default function register(api: OpenClawPluginApi) {
           plan: tokenPlan,
           allowedActions: extractAllowedActions(tokenPlan),
           executedStepIndices: new Set<number>(),
+          auditedKeys: new Set<string>(),
           createdAt: Date.now(),
           expiresAt:
             typeof tokenParsed?.expiresAt === "number"
@@ -2076,6 +2426,12 @@ export default function register(api: OpenClawPluginApi) {
           planId: planId || undefined,
           steps: Array.isArray((tokenPlan as any)?.steps) ? (tokenPlan as any).steps.length : 0,
         });
+        // Name the planned actions. Without this a block is unreadable: you see
+        // "steps=2 status=blocked" and cannot tell whether the tool was legitimately
+        // absent from the plan (correct) or present and mismatched (a bug).
+        api.logger.info(
+          `armoriq: plan allows [${[...extractAllowedActions(tokenPlan)].join(", ") || "nothing"}]`,
+        );
         const sessionId = event.sessionId?.trim();
         if (sessionId && runKey !== sessionId) {
           sessionKeyIndex.set(sessionId, runKey);
@@ -2096,6 +2452,7 @@ export default function register(api: OpenClawPluginApi) {
           plan: { steps: [], metadata: { goal: "invalid" } },
           allowedActions: new Set(),
           executedStepIndices: new Set(),
+          auditedKeys: new Set<string>(),
           createdAt: Date.now(),
           error: `ArmorIQ planning failed: ${message}`,
         });
@@ -2179,6 +2536,16 @@ export default function register(api: OpenClawPluginApi) {
       const token = cached.jwtToken ?? cached.tokenRaw ?? "";
       if (!token) return;
       const isError = typeof event.error === "string" && event.error.length > 0;
+
+      // One refused action used to produce an audit row per agent retry. Record
+      // the first occurrence of a given tool+outcome in a run and drop the
+      // repeats: the security signal is "this was attempted and refused", not
+      // how many times the model retried before giving up.
+      const auditKey = `${normalized}:${isError ? `err:${String(event.error).slice(0, 120)}` : "ok"}`;
+      if (cached.auditedKeys.has(auditKey)) {
+        return;
+      }
+      cached.auditedKeys.add(auditKey);
       void verificationService
         .createAuditLog({
           token,
@@ -2465,7 +2832,9 @@ export default function register(api: OpenClawPluginApi) {
         api.logger.info(
           `armoriq: plan check (cached token) tool=${event.toolName} steps=${
             Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
-          } status=${tokenCheck.blockReason ? "blocked" : "ok"}`,
+          } status=${tokenCheck.blockReason ? "blocked" : "ok"}${
+            tokenCheck.blockReason ? ` reason="${tokenCheck.blockReason}"` : ""
+          }`,
         );
         if (tokenCheck.blockReason) {
           return { block: true, blockReason: tokenCheck.blockReason };

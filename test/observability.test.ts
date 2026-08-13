@@ -116,6 +116,28 @@ describe("armorclaw observability", () => {
     expect(attrs.input).toEqual({ tool: "send_email" });
   });
 
+  it("collapses agent retries of the same refused tool into one span", () => {
+    const obs = make();
+    obs.startRun("run-1", "x");
+    // The agent retried a blocked exec ten times in one turn; that produced ten
+    // identical spans on the dashboard before this was deduped.
+    for (let i = 0; i < 10; i++) {
+      obs.recordToolDecision("run-1", "exec", {
+        allowed: false,
+        reason: "ArmorIQ intent drift: tool not in plan (exec)",
+      });
+    }
+    expect(calls.filter((c) => c.method === "recordPolicyCall")).toHaveLength(1);
+  });
+
+  it("still records a genuinely different decision for the same tool", () => {
+    const obs = make();
+    obs.startRun("run-1", "x");
+    obs.recordToolDecision("run-1", "exec", { allowed: false, reason: "drift" });
+    obs.recordToolDecision("run-1", "exec", { allowed: true, reason: null });
+    expect(calls.filter((c) => c.method === "recordPolicyCall")).toHaveLength(2);
+  });
+
   it("ignores decisions for a run that was never started", () => {
     make().recordToolDecision("unknown-run", "bash", { allowed: true, reason: null });
     expect(calls.filter((c) => c.method === "recordPolicyCall")).toHaveLength(0);

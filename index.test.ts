@@ -114,6 +114,7 @@ async function fireLlmInput(
   runId: string,
   prompt = "Read a file",
   systemPrompt = "Available tools:\n- read: Read files\n- send_email: Send email\n- write_file: Write file",
+  tools?: unknown[],
 ) {
   const handler = handlers.get("llm_input")?.[0];
   await handler?.(
@@ -126,6 +127,7 @@ async function fireLlmInput(
       prompt,
       historyMessages: [],
       imagesCount: 0,
+      ...(tools === undefined ? {} : { tools }),
     },
     { agentId: "agent-1", sessionKey: "session:test" },
   );
@@ -297,6 +299,101 @@ describe("ArmorIQ plugin", () => {
     const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("intent drift");
+  });
+
+  it("plans from the structured tool list when the hook provides one", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "exec", mcp: "openclaw" }],
+        metadata: { goal: "list files" },
+      }),
+    });
+
+    await fireInboundClaim(handlers);
+    // No tool names in the prompt text at all: the scrape would find nothing,
+    // so anything planned here had to come from the structured payload.
+    await fireLlmInput(handlers, "run-structured", "list the files in /tmp", "You are an agent.", [
+      { name: "exec", description: "Run a shell command" },
+      { function: { name: "read", description: "Read a file" } },
+    ]);
+
+    const planningPrompt = String(completeSimpleMock.mock.calls[0]?.[1]?.messages?.[0]?.content ?? "");
+    expect(planningPrompt).toContain("exec");
+    expect(planningPrompt).toContain("read");
+    expect(planningPrompt).not.toContain("(no tools available)");
+  });
+
+  it("falls back to scraping the system prompt when the hook sends no tools", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({ steps: [], metadata: { goal: "none" } }),
+    });
+
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-scrape", "Read a file");
+
+    const planningPrompt = String(completeSimpleMock.mock.calls[0]?.[1]?.messages?.[0]?.content ?? "");
+    expect(planningPrompt).toContain("read");
+    expect(planningPrompt).not.toContain("(no tools available)");
+  });
+
+  it("plans against the user message, not the untrusted metadata envelope", async () => {
+    const { api, handlers } = createApi({
+      enabled: true,
+      apiKey: "ak_live_test",
+      userId: "user-1",
+      agentId: "agent-1",
+    });
+    register(api as any);
+
+    completeSimpleMock.mockResolvedValue({
+      content: JSON.stringify({
+        steps: [{ action: "exec", mcp: "openclaw" }],
+        metadata: { goal: "list files" },
+      }),
+    });
+
+    // Exactly the shape a channel message arrives in.
+    const wrapped = [
+      "Conversation info (untrusted metadata):",
+      "```json",
+      '{ "message_id": "abc123", "channel": "telegram" }',
+      "```",
+      "",
+      "Sender (untrusted metadata):",
+      "```json",
+      '{ "label": "Someone" }',
+      "```",
+      "",
+      "list the files in the music folder",
+    ].join("\n");
+
+    await fireInboundClaim(handlers);
+    await fireLlmInput(handlers, "run-envelope", wrapped, "You are an agent.", [
+      { name: "exec", description: "Run a shell command" },
+    ]);
+
+    const planningPrompt = String(
+      completeSimpleMock.mock.calls[0]?.[1]?.messages?.[0]?.content ?? "",
+    );
+    expect(planningPrompt).toContain("list the files in the music folder");
+    expect(planningPrompt).not.toContain("untrusted metadata");
+    expect(planningPrompt).not.toContain("message_id");
   });
 
   it("reports each tool decision to observability", async () => {
@@ -601,6 +698,53 @@ describe("ArmorIQ plugin", () => {
 
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("intent plan missing");
+  });
+
+  describe("policy text parsing", () => {
+    // A rule whose tool is "." or "the" persists and lists like a real rule, so
+    // the failure is silent: the operator believes exec is blocked and it is not.
+    // These are the phrasings that produced exactly that.
+    const cases: Array<{ text: string; tool: string; action: string }> = [
+      { text: "block the exec tool", tool: "exec", action: "deny" },
+      // Verbatim from the agent when asked to add a rule and then list; this is
+      // the string that persisted a rule with tool "." before the parser was fixed.
+      { text: "Policy new: block the exec tool. Then list all policies.", tool: "exec", action: "deny" },
+      { text: "block exec", tool: "exec", action: "deny" },
+      { text: "deny the send_email tool", tool: "send_email", action: "deny" },
+      { text: "allow the read tool", tool: "read", action: "allow" },
+      { text: "block tool: exec", tool: "exec", action: "deny" },
+      { text: "block the `exec` tool", tool: "exec", action: "deny" },
+      { text: "block all tools", tool: "*", action: "deny" },
+    ];
+
+    for (const { text, tool, action } of cases) {
+      it(`parses "${text}" as ${action} ${tool}`, async () => {
+        const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-policy-text-"));
+        const policyPath = join(dir, "policy.json");
+        const { api, tools } = createApi({
+          enabled: true,
+          apiKey: "ak_live_test",
+          userId: "user-1",
+          agentId: "agent-1",
+          policyUpdateEnabled: true,
+          policyUpdateAllowList: ["*"],
+          policyStorePath: policyPath,
+        });
+        register(api as any);
+        const ctx = { agentId: "agent-1", sessionKey: "session:test" };
+        const factory = tools.find((f) => f(ctx)?.name === "policy_update");
+        const policyTool = factory?.(ctx);
+        if (!policyTool) throw new Error("policy_update tool not registered");
+
+        await policyTool.execute("call-1", { text });
+
+        const saved = JSON.parse(await fs.readFile(policyPath, "utf8"));
+        const rules = saved.policy?.rules ?? [];
+        expect(rules).toHaveLength(1);
+        expect(rules[0].tool).toBe(tool);
+        expect(rules[0].action).toBe(action);
+      });
+    }
   });
 
   describe("planner response extraction", () => {
