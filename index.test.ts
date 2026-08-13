@@ -925,6 +925,46 @@ describe("ArmorIQ plugin", () => {
     });
   });
 
+  describe("policy update confirmations", () => {
+    async function policyTool(dir: string) {
+      const { api, tools } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyUpdateEnabled: true,
+        policyUpdateAllowList: ["*"],
+        policyStorePath: join(dir, "policy.json"),
+      });
+      register(api as any);
+      const ctx = { agentId: "agent-1", sessionKey: "session:test" };
+      const factory = tools.find((f) => f(ctx)?.name === "policy_update");
+      const tool = factory?.(ctx);
+      if (!tool) throw new Error("policy_update tool not registered");
+      return tool;
+    }
+
+    // The confirmation was "Policy updated to version 9." with no id, so the
+    // agent relayed "Done." and the operator could not know what to delete.
+    it("names the rule it created and how to remove it", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-confirm-"));
+      const tool = await policyTool(dir);
+      const res = await tool.execute("c1", { text: "block the exec tool" });
+      const text = String(res?.content?.[0]?.text ?? "");
+      expect(text).toContain("policy1");
+      expect(text).toContain("deny");
+      expect(text).toContain("exec");
+      expect(text).toContain("Policy delete policy1");
+    });
+
+    it("keeps reporting the version", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-confirm2-"));
+      const tool = await policyTool(dir);
+      const res = await tool.execute("c1", { text: "block the exec tool" });
+      expect(String(res?.content?.[0]?.text ?? "")).toMatch(/version \d+/);
+    });
+  });
+
   describe("policy visibility across plugin instances", () => {
     // The gateway constructs a plugin instance per agent scope. A rule created
     // from chat is written by whichever instance handled policy_update and

@@ -301,6 +301,33 @@ function formatPolicyRule(rule: PolicyRule): string {
   return parts.join(" ");
 }
 
+/**
+ * Name the rules an update touched.
+ *
+ * The confirmation used to be "Policy updated to version 9." and nothing else,
+ * so the agent relayed a bare "Done." and the operator had no way to learn the
+ * id that was just minted. The next step in any real flow is removing the rule,
+ * and "Policy delete policy1" then guesses at an id nobody was told.
+ */
+function formatPolicyUpdateResult(update: PolicyUpdate, nextState: PolicyState): string {
+  const described = (update.rules ?? [])
+    .map((rule) => {
+      const target = rule.tool && rule.tool !== "*" ? `\`${rule.tool}\`` : "all tools";
+      const dataClass = rule.dataClass ? ` for ${rule.dataClass}` : "";
+      return `\`${rule.id}\`: ${rule.action} ${target}${dataClass}`;
+    })
+    .filter(Boolean);
+  if (described.length === 0) {
+    return `Policy updated to version ${nextState.version}.`;
+  }
+  const ids = (update.rules ?? []).map((rule) => rule.id);
+  const removal =
+    ids.length === 1
+      ? ` Remove it with "Policy delete ${ids[0]}".`
+      : ` Remove them with "Policy delete ${ids.join(" ")}".`;
+  return `Policy updated to version ${nextState.version}. ${described.join("; ")}.${removal}`;
+}
+
 function formatPolicyHelp(): string {
   return [
     "Policy commands (8):",
@@ -2201,6 +2228,10 @@ export default function register(api: OpenClawPluginApi) {
         parameters: PolicyUpdateToolSchema,
         async execute(_toolCallId, params) {
           await policyReady;
+          // Another instance (or the CLI) may have changed the file since this
+          // one loaded it. Without this, "Policy list" reports stale rules and
+          // "Policy delete policy1" answers "not found" for a rule that exists.
+          await policyStore.refreshIfChanged();
           const rawUpdate = (params as { update?: unknown }).update;
           const rawText = readString((params as { text?: unknown }).text);
           const actor = toolCtx.agentId ?? toolCtx.sessionKey ?? "unknown";
@@ -2353,7 +2384,7 @@ export default function register(api: OpenClawPluginApi) {
                 content: [
                   {
                     type: "text",
-                    text: `Policy updated to version ${nextState.version}.`,
+                    text: formatPolicyUpdateResult(parsed.data, nextState),
                   },
                 ],
                 details: {
@@ -2395,7 +2426,7 @@ export default function register(api: OpenClawPluginApi) {
               content: [
                 {
                   type: "text",
-                  text: `Policy updated to version ${nextState.version}.`,
+                  text: formatPolicyUpdateResult(parsed.data, nextState),
                 },
               ],
               details: {
