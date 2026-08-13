@@ -304,7 +304,12 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("web_fetch");
     expect(result?.blockReason).toContain("not in the approved intent plan");
     expect(result?.blockReason).toContain("The plan authorised read");
-    expect(result?.blockReason).toMatch(/Tell the user/i);
+    expect(result?.blockReason).toMatch(/reply to the user/i);
+    // The model answered a blocked directory listing by inventing 365 files.
+    // A refusal it can paper over is worse than a silent one, so the message
+    // must state there is no data and forbid supplying one from memory.
+    expect(result?.blockReason).toMatch(/NO DATA/);
+    expect(result?.blockReason).toMatch(/MUST NOT invent/);
   });
 
   it("plans from the structured tool list when the hook provides one", async () => {

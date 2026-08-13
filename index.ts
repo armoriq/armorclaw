@@ -1232,13 +1232,28 @@ function resolveCsrgProofsFromToken(params: {
  * user saw silence on Telegram. Naming what was blocked, what the plan did
  * authorise, and that it should say so, turns a dead turn into an explanation.
  */
+/** First sentence of a block reason, for logs. The full text goes to the model. */
+function summariseReason(reason: string): string {
+  const firstLine = reason.split("\n")[0] ?? reason;
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+}
+
 function driftBlockReason(toolName: string, allowed: Set<string>): string {
   const authorised = allowed.size > 0 ? Array.from(allowed).sort().join(", ") : "no tools";
   return (
     `ArmorIQ blocked "${toolName}": it is not in the approved intent plan for this request. ` +
-    `The plan authorised ${authorised}. Do not retry this tool or try to work around the block. ` +
-    `Tell the user plainly that ArmorIQ intent enforcement blocked "${toolName}" because it was ` +
-    `not part of the planned intent, and ask them to restate what they want done.`
+    `The plan authorised ${authorised}.\n` +
+    // The first version of this message said what was blocked and to tell the
+    // user. The model told the user something else: it invented a full
+    // directory listing for a tool that never ran. A refusal the model can
+    // paper over is worse than a silent one, because the answer looks real.
+    `You received NO DATA from this tool. It did not run.\n` +
+    `You MUST NOT invent, guess, recall, or infer what its output would have been. ` +
+    `Do not answer the user's question from memory or assumption.\n` +
+    `Do not retry this tool and do not attempt another tool to achieve the same thing.\n` +
+    `Reply to the user with exactly this: that ArmorIQ intent enforcement blocked ` +
+    `"${toolName}" because it was not part of the planned intent, that you therefore ` +
+    `have no result to report, and ask them to restate what they want done.`
   );
 }
 
@@ -1983,6 +1998,8 @@ function logStartupBanner(
 
 export default function register(api: OpenClawPluginApi) {
   const cfg = resolveConfig(api);
+  /** ARMORIQ_DEBUG=1 turns the per-tool-call trace back on. */
+  const armoriqDebug = readBoolean(process.env.ARMORIQ_DEBUG) === true;
 
   if (!cfg.enabled) {
     api.logger.info("armoriq: plugin disabled (set plugins.entries.armoriq.enabled=true)");
@@ -2636,9 +2653,13 @@ export default function register(api: OpenClawPluginApi) {
     const normalizedTool = normalizeToolName(event.toolName);
     const toolCtx = buildToolContextFromCaches(ctx);
     const runKey = resolveRunKey(toolCtx);
-    api.logger.info(
+    // Cache keys and run ids matter when tracing a stuck run and are noise
+    // otherwise, so this is debug-gated rather than printed per tool call.
+    if (armoriqDebug) {
+      api.logger.info(
       `armoriq: [tool_call] tool=${normalizedTool} runKey=${runKey} runId=${toolCtx.runId} sessionKey=${toolCtx.sessionKey} cacheKeys=[${[...planCache.keys()].join(",")}]`,
-    );
+      );
+    }
 
     // Await pending plan if llm_input planning is still in flight
     const pending = planningPromises.get(runKey ?? "");
@@ -2773,13 +2794,18 @@ export default function register(api: OpenClawPluginApi) {
         }
       }
       const proofCount = proofs?.proof && Array.isArray(proofs.proof) ? proofs.proof.length : 0;
-      api.logger.info(
-        `armoriq: verify-step request tool=${event.toolName} runId=${String(
-          toolCtx.runId ?? "",
-        )} proofs=${proofs ? "present" : "none"} proofCount=${proofCount} path=${String(
-          proofs?.path ?? "",
-        )}`,
-      );
+      // The matching "verify-step result" line reports the outcome, which is
+      // what an operator needs. The request side is for tracing a proof that
+      // did not land, so it is debug-gated.
+      if (armoriqDebug) {
+        api.logger.info(
+          `armoriq: verify-step request tool=${event.toolName} runId=${String(
+            toolCtx.runId ?? "",
+          )} proofs=${proofs ? "present" : "none"} proofCount=${proofCount} path=${String(
+            proofs?.path ?? "",
+          )}`,
+        );
+      }
       const proofsRequired =
         verificationService.csrgProofsRequired() && verificationService.csrgVerifyIsEnabled();
       const proofError = validateCsrgProofHeaders(proofs, proofsRequired);
@@ -2792,9 +2818,11 @@ export default function register(api: OpenClawPluginApi) {
         const parsed = JSON.parse(tokenRaw);
         if (parsed?.jwtToken) {
           verifyToken = parsed.jwtToken;
-          api.logger.info(
-            `armoriq: using jwtToken for verification (length=${verifyToken.length})`,
-          );
+          if (armoriqDebug) {
+            api.logger.info(
+              `armoriq: using jwtToken for verification (length=${verifyToken.length})`,
+            );
+          }
         } else {
           api.logger.warn(
             `armoriq: no jwtToken in token, using raw (keys=${Object.keys(parsed).join(",")})`,
@@ -2873,13 +2901,19 @@ export default function register(api: OpenClawPluginApi) {
         toolParams: event.params,
       });
       if (tokenCheck.matched) {
-        api.logger.info(
-          `armoriq: plan check (cached token) tool=${event.toolName} steps=${
-            Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
-          } status=${tokenCheck.blockReason ? "blocked" : "ok"}${
-            tokenCheck.blockReason ? ` reason="${tokenCheck.blockReason}"` : ""
-          }`,
-        );
+        // blockReason is a paragraph of instructions aimed at the model. The
+        // log wants the decision, not the script: print the first sentence.
+        // A block is an event worth reading; an allowed check is the common
+        // case and repeats for every tool call in the turn.
+        if (tokenCheck.blockReason || armoriqDebug) {
+          api.logger.info(
+            `armoriq: plan check (cached token) tool=${event.toolName} steps=${
+              Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
+            } status=${tokenCheck.blockReason ? "blocked" : "ok"}${
+              tokenCheck.blockReason ? ` reason="${summariseReason(tokenCheck.blockReason)}"` : ""
+            }`,
+          );
+        }
         if (tokenCheck.blockReason) {
           return { block: true, blockReason: tokenCheck.blockReason };
         }
