@@ -164,6 +164,8 @@ async function postJson<T>(
 }
 
 export class IAPVerificationService {
+  /** Last announced endpoint summary, so identical re-inits stay quiet. */
+  private static lastAnnounced = "";
   private readonly logger: Required<LoggerLike>;
   private readonly iapBaseUrl: string;
   private readonly csrgBaseUrl: string;
@@ -190,13 +192,17 @@ export class IAPVerificationService {
         `IAP_BACKEND_URL not set; defaulting to local backend at ${this.iapBaseUrl}`,
       );
     }
-    this.logger.info(`IAP Verification Service initialized - Base URL: ${this.iapBaseUrl}`);
-    this.logger.info(`CSRG Verification URL: ${this.csrgBaseUrl}`);
-    if (this.requireCsrgProofs) {
-      this.logger.info("CSRG proof headers are REQUIRED for tool execution");
-    }
-    if (this.csrgVerifyEnabled) {
-      this.logger.info("CSRG /verify/action is ENABLED for cryptographic verification");
+    // One service is constructed per agent scope, so this used to print four
+    // identical lines several times per gateway start and again on every
+    // inbound message. It is startup state, not an event: say it once, on one
+    // line, and only when it changes.
+    const summary =
+      `IAP ${this.iapBaseUrl} | CSRG ${this.csrgBaseUrl}` +
+      ` | proofs=${this.requireCsrgProofs ? "required" : "optional"}` +
+      ` | verify=${this.csrgVerifyEnabled ? "on" : "off"}`;
+    if (summary !== IAPVerificationService.lastAnnounced) {
+      IAPVerificationService.lastAnnounced = summary;
+      this.logger.info(`armoriq: ${summary}`);
     }
   }
 

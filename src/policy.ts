@@ -304,6 +304,8 @@ export type PolicyChangeCallback = (state: PolicyState) => void | Promise<void>;
 
 export class PolicyStore {
   private state: PolicyState;
+  /** mtime of the file as this store last read or wrote it. */
+  private lastLoadedMtimeMs = 0;
   private readonly filePath: string;
   private readonly logger?: { info?: (message: string) => void; warn?: (message: string) => void };
   private readonly onPolicyChange?: PolicyChangeCallback;
@@ -368,11 +370,40 @@ export class PolicyStore {
         policy,
         history,
       };
+      try {
+        this.lastLoadedMtimeMs = (await fs.stat(this.filePath)).mtimeMs;
+      } catch {
+        this.lastLoadedMtimeMs = 0;
+      }
     } catch (err) {
       if ((err as { code?: string }).code !== "ENOENT") {
         this.logger?.warn?.(`armoriq: failed to load policy store (${String(err)})`);
       }
     }
+  }
+
+  /**
+   * Re-read the file if it changed since this store last touched it.
+   *
+   * The store is written by whichever process handled the policy_update and
+   * read by whichever handles the next tool call, and those are routinely not
+   * the same: the gateway constructs a plugin instance per agent scope, and the
+   * CLI is a separate process entirely. Without this, a rule created from chat
+   * sat on disk while the instance evaluating the next tool call still held the
+   * empty policy it loaded at startup, so "block the exec tool" was accepted,
+   * persisted, and then not enforced.
+   */
+  async refreshIfChanged(): Promise<void> {
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await fs.stat(this.filePath)).mtimeMs;
+    } catch {
+      return; // No file yet: nothing on disk can be newer than memory.
+    }
+    if (mtimeMs === this.lastLoadedMtimeMs) {
+      return;
+    }
+    await this.load();
   }
 
   getState(): PolicyState {
@@ -416,6 +447,11 @@ export class PolicyStore {
 
     await fs.mkdir(dirname(this.filePath), { recursive: true });
     await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+    try {
+      this.lastLoadedMtimeMs = (await fs.stat(this.filePath)).mtimeMs;
+    } catch {
+      /* best effort: a failed stat only costs one extra reload */
+    }
     await this.notifyPolicyChange();
     return this.state;
   }
@@ -445,6 +481,11 @@ export class PolicyStore {
 
     await fs.mkdir(dirname(this.filePath), { recursive: true });
     await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+    try {
+      this.lastLoadedMtimeMs = (await fs.stat(this.filePath)).mtimeMs;
+    } catch {
+      /* best effort: a failed stat only costs one extra reload */
+    }
     await this.notifyPolicyChange();
     return this.state;
   }
@@ -486,6 +527,11 @@ export class PolicyStore {
 
     await fs.mkdir(dirname(this.filePath), { recursive: true });
     await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+    try {
+      this.lastLoadedMtimeMs = (await fs.stat(this.filePath)).mtimeMs;
+    } catch {
+      /* best effort: a failed stat only costs one extra reload */
+    }
     await this.notifyPolicyChange();
     return this.state;
   }
