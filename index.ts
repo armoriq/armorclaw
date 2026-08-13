@@ -518,12 +518,10 @@ function parsePolicyTextCommand(text: string, state: PolicyState): PolicyCommand
   ) {
     return { kind: "help" };
   }
-  if (/\b(list|show|view)\b/.test(lower) && /\bpolicy|policies\b/.test(lower)) {
-    return { kind: "list" };
-  }
-  if (/\b(get|show|view)\b/.test(lower) && ids.length === 1) {
-    return { kind: "get", id: ids[0] };
-  }
+  // Destructive intents are matched before "list". People chain commands --
+  // "delete policy1, then list all policies" -- and matching the trailing verb
+  // first returned the list and silently dropped the delete, while the agent
+  // read the tool's success and told the user the rule was gone. It was not.
   if (/\b(reset|clear\s+all|wipe)\b/.test(lower)) {
     return { kind: "reset", reason: truncateReason(`Policy reset: ${trimmed}`) };
   }
@@ -546,6 +544,15 @@ function parsePolicyTextCommand(text: string, state: PolicyState): PolicyCommand
         };
       }
     }
+    // A delete we cannot resolve must ask which rule. Falling through to the
+    // update branch would answer "delete the exec rule" by creating one.
+    return { kind: "need_id" };
+  }
+  if (/\b(list|show|view)\b/.test(lower) && /\bpolicy|policies\b/.test(lower)) {
+    return { kind: "list" };
+  }
+  if (/\b(get|show|view)\b/.test(lower) && ids.length === 1) {
+    return { kind: "get", id: ids[0] };
   }
   if (/\bupdate\b/.test(lower) && ids.length === 0) {
     return { kind: "need_id" };
@@ -1579,7 +1586,21 @@ async function buildPlanFromPrompt(params: {
     `- Output ONLY valid JSON.\n` +
     `- Use the tool names exactly as given.\n` +
     `- Create a sequence of tool calls needed to satisfy the request.\n` +
-    `- If no tools are needed, return an empty steps array.\n` +
+    // The plan is the allow-list: a tool the agent later picks that is not in
+    // here is refused as intent drift. The agent chooses its own tools, so
+    // under-predicting is what produces false blocks -- "what files are in
+    // /tmp" planned exec, the agent used read, and a harmless request was
+    // refused. Predict the union of what could reasonably be used, not one
+    // preferred route. This does not widen enforcement: the plan still bounds
+    // the request, it just stops the bound being narrower than the intent.
+    `- Include EVERY tool that could reasonably be used to satisfy the request, ` +
+    `not just your preferred one. If the same result could be reached by more ` +
+    `than one tool (e.g. reading a file directly OR via a shell command; ` +
+    `listing a directory OR globbing it), include ALL of them as steps.\n` +
+    `- Do NOT include tools that could not plausibly serve this request. Breadth ` +
+    `across equivalent ways to do the SAME work is expected; unrelated tools are not.\n` +
+    `- If the request genuinely needs no tools (greetings, questions about ` +
+    `yourself, chat), return an empty steps array.\n` +
     `- Every step MUST include: { action, mcp }.\n` +
     `- Use mcp="openclaw" for all steps.\n\n` +
     `Available tools:\n${toolList}\n\n` +

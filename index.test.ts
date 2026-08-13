@@ -707,6 +707,64 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("intent plan missing");
   });
 
+  describe("policy command routing", () => {
+    // "delete policy1, then list all policies" used to match the trailing
+    // "list", return the policy list, and drop the delete silently. The agent
+    // read that as success and told the user the rule was gone while it was
+    // still on disk and still enforcing.
+    it("deletes when a delete is chained with a list", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-policy-del-"));
+      const policyPath = join(dir, "policy.json");
+      const { api, tools } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyUpdateEnabled: true,
+        policyUpdateAllowList: ["*"],
+        policyStorePath: policyPath,
+      });
+      register(api as any);
+      const ctx = { agentId: "agent-1", sessionKey: "session:test" };
+      const factory = tools.find((f) => f(ctx)?.name === "policy_update");
+      const policyTool = factory?.(ctx);
+      if (!policyTool) throw new Error("policy_update tool not registered");
+
+      await policyTool.execute("c1", { text: "block the exec tool" });
+      const added = JSON.parse(await fs.readFile(policyPath, "utf8"));
+      expect(added.policy.rules).toHaveLength(1);
+      const id = added.policy.rules[0].id;
+
+      await policyTool.execute("c2", { text: `delete ${id}, then list all policies` });
+      const after = JSON.parse(await fs.readFile(policyPath, "utf8"));
+      expect(after.policy.rules).toHaveLength(0);
+    });
+
+    it("asks which rule instead of creating one when a delete names nothing", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-policy-del2-"));
+      const policyPath = join(dir, "policy.json");
+      const { api, tools } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyUpdateEnabled: true,
+        policyUpdateAllowList: ["*"],
+        policyStorePath: policyPath,
+      });
+      register(api as any);
+      const ctx = { agentId: "agent-1", sessionKey: "session:test" };
+      const factory = tools.find((f) => f(ctx)?.name === "policy_update");
+      const policyTool = factory?.(ctx);
+      if (!policyTool) throw new Error("policy_update tool not registered");
+
+      const res = await policyTool.execute("c1", { text: "remove the policy for exec" });
+      expect(res?.details?.action).toBe("need_id");
+      // The dangerous outcome is answering "remove ..." by adding a rule.
+      await expect(fs.readFile(policyPath, "utf8")).rejects.toThrow();
+    });
+  });
+
   describe("policy text parsing", () => {
     // A rule whose tool is "." or "the" persists and lists like a real rule, so
     // the failure is silent: the operator believes exec is blocked and it is not.
