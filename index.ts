@@ -1395,6 +1395,14 @@ function stripUntrustedMetadata(prompt: string): string {
     if (next === out) break;
     out = next;
   }
+  // OpenClaw prepends its own delivery directive ("Delivery: Final assistant
+  // text is not automatically delivered in this run. Use the `message` tool
+  // ...") on channel runs. It is instruction to the agent about how to reply,
+  // not a statement of what the user wants, and leaving it in made the planner
+  // plan for it: "check my documents folder" produced a plan authorising
+  // message, sessions_spawn and sessions_yield, so the exec the agent actually
+  // needed was refused as drift and the turn ended with no reply at all.
+  out = out.replace(/^[ \t]*Delivery:[^\n]*(?:\n|$)/gm, "");
   const trimmed = out.trim();
   // If stripping consumed everything, the original is the best we have.
   return trimmed.length > 0 ? trimmed : prompt;
