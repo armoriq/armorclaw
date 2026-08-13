@@ -700,6 +700,53 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("intent plan missing");
   });
 
+  describe("policy text parsing", () => {
+    // A rule whose tool is "." or "the" persists and lists like a real rule, so
+    // the failure is silent: the operator believes exec is blocked and it is not.
+    // These are the phrasings that produced exactly that.
+    const cases: Array<{ text: string; tool: string; action: string }> = [
+      { text: "block the exec tool", tool: "exec", action: "deny" },
+      // Verbatim from the agent when asked to add a rule and then list; this is
+      // the string that persisted a rule with tool "." before the parser was fixed.
+      { text: "Policy new: block the exec tool. Then list all policies.", tool: "exec", action: "deny" },
+      { text: "block exec", tool: "exec", action: "deny" },
+      { text: "deny the send_email tool", tool: "send_email", action: "deny" },
+      { text: "allow the read tool", tool: "read", action: "allow" },
+      { text: "block tool: exec", tool: "exec", action: "deny" },
+      { text: "block the `exec` tool", tool: "exec", action: "deny" },
+      { text: "block all tools", tool: "*", action: "deny" },
+    ];
+
+    for (const { text, tool, action } of cases) {
+      it(`parses "${text}" as ${action} ${tool}`, async () => {
+        const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-policy-text-"));
+        const policyPath = join(dir, "policy.json");
+        const { api, tools } = createApi({
+          enabled: true,
+          apiKey: "ak_live_test",
+          userId: "user-1",
+          agentId: "agent-1",
+          policyUpdateEnabled: true,
+          policyUpdateAllowList: ["*"],
+          policyStorePath: policyPath,
+        });
+        register(api as any);
+        const ctx = { agentId: "agent-1", sessionKey: "session:test" };
+        const factory = tools.find((f) => f(ctx)?.name === "policy_update");
+        const policyTool = factory?.(ctx);
+        if (!policyTool) throw new Error("policy_update tool not registered");
+
+        await policyTool.execute("call-1", { text });
+
+        const saved = JSON.parse(await fs.readFile(policyPath, "utf8"));
+        const rules = saved.policy?.rules ?? [];
+        expect(rules).toHaveLength(1);
+        expect(rules[0].tool).toBe(tool);
+        expect(rules[0].action).toBe(action);
+      });
+    }
+  });
+
   describe("planner response extraction", () => {
     const validPlan = {
       steps: [{ action: "read", mcp: "openclaw" }],

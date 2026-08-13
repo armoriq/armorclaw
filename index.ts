@@ -407,26 +407,63 @@ function inferPolicyDataClass(text: string): PolicyDataClass | undefined {
   return undefined;
 }
 
+// Words that are never a tool name. Without this, "block the exec tool" parses
+// as the tool "the", and "... tool." parses as the tool "." -- both of which
+// persist as a rule that looks real and matches nothing.
+const POLICY_TOOL_STOPWORDS = new Set([
+  "a",
+  "all",
+  "an",
+  "and",
+  "any",
+  "every",
+  "for",
+  "from",
+  "it",
+  "that",
+  "the",
+  "then",
+  "these",
+  "this",
+  "those",
+  "to",
+  "tool",
+  "tools",
+  "using",
+  "with",
+]);
+
+/** A tool name starts alphanumeric; trailing punctuation is sentence, not name. */
+function cleanPolicyToolName(raw: string | undefined): string | undefined {
+  const name = (raw ?? "").trim().replace(/[.,;:!?]+$/, "");
+  if (!/^[a-z0-9]/i.test(name)) {
+    return undefined;
+  }
+  return POLICY_TOOL_STOPWORDS.has(name.toLowerCase()) ? undefined : name;
+}
+
 function inferPolicyTool(text: string): string {
   const lower = text.toLowerCase();
   if (/(all\s+tools|any\s+tool|\*\b)/i.test(lower)) {
     return "*";
   }
-  const backtickMatch = text.match(/`([a-z0-9_.:-]+)`/i);
-  if (backtickMatch?.[1]) {
-    return backtickMatch[1];
-  }
-  const toolMatch = text.match(/\btool\s*[:=]?\s*([a-z0-9_.:-]+)/i);
-  if (toolMatch?.[1]) {
-    return toolMatch[1];
-  }
-  const actionMatch = text.match(/\b(block|deny|allow|disallow|permit|require)\s+([a-z0-9_.:-]+)/i);
-  if (actionMatch?.[2]) {
-    return actionMatch[2];
-  }
-  const forMatch = text.match(/\bfor\s+([a-z0-9_.:-]+)\s+tool\b/i);
-  if (forMatch?.[1]) {
-    return forMatch[1];
+  // Ordered most-explicit first. Each candidate is validated, and a rejected
+  // match falls through to the next form rather than ending the search.
+  const patterns: RegExp[] = [
+    /`([a-z0-9_.:-]+)`/i,
+    /\btool\s*[:=]\s*([a-z0-9][a-z0-9_.:-]*)/i,
+    /\bfor\s+([a-z0-9][a-z0-9_.:-]*)\s+tool\b/i,
+    // "the exec tool" / "exec tool" -- the name sits before the noun.
+    /\b([a-z0-9][a-z0-9_.:-]*)\s+tool\b/i,
+    // "block exec" / "deny the exec" -- articles are skipped, not captured.
+    /\b(?:block|deny|allow|disallow|permit|require)\s+(?:the|a|an)?\s*([a-z0-9][a-z0-9_.:-]*)/i,
+    /\btool\s+([a-z0-9][a-z0-9_.:-]*)/i,
+  ];
+  for (const pattern of patterns) {
+    const cleaned = cleanPolicyToolName(text.match(pattern)?.[1]);
+    if (cleaned) {
+      return cleaned;
+    }
   }
   return "*";
 }
