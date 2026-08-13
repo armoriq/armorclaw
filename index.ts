@@ -2037,6 +2037,8 @@ export default function register(api: OpenClawPluginApi) {
   const cfg = resolveConfig(api);
   /** ARMORIQ_DEBUG=1 turns the per-tool-call trace back on. */
   const armoriqDebug = readBoolean(process.env.ARMORIQ_DEBUG) === true;
+  /** Block lines already printed, so agent retries do not repeat them. */
+  const loggedBlocks = new Set<string>();
 
   if (!cfg.enabled) {
     api.logger.info("armoriq: plugin disabled (set plugins.entries.armoriq.enabled=true)");
@@ -2527,9 +2529,20 @@ export default function register(api: OpenClawPluginApi) {
         // Name the planned actions. Without this a block is unreadable: you see
         // "steps=2 status=blocked" and cannot tell whether the tool was legitimately
         // absent from the plan (correct) or present and mismatched (a bug).
-        api.logger.info(
-          `armoriq: plan allows [${[...extractAllowedActions(tokenPlan)].join(", ") || "nothing"}]`,
-        );
+        const allowedList = [...extractAllowedActions(tokenPlan)];
+        api.logger.info(`armoriq: plan allows [${allowedList.join(", ") || "nothing"}]`);
+        // An empty plan blocks every tool, so it is the single most expensive
+        // outcome to diagnose after the fact. Name what the planner was offered
+        // and what it saw, rather than leaving only "Plan captured with 0 steps".
+        if (allowedList.length === 0) {
+          api.logger.warn(
+            `armoriq: empty plan — nothing will be allowed this turn. ` +
+              `planner had ${tools.length} tool(s) [${tools
+                .map((t) => t.name)
+                .slice(0, 25)
+                .join(", ")}] for prompt "${userPrompt.slice(0, 120)}"`,
+          );
+        }
         const sessionId = event.sessionId?.trim();
         if (sessionId && runKey !== sessionId) {
           sessionKeyIndex.set(sessionId, runKey);
@@ -2941,8 +2954,13 @@ export default function register(api: OpenClawPluginApi) {
         // blockReason is a paragraph of instructions aimed at the model. The
         // log wants the decision, not the script: print the first sentence.
         // A block is an event worth reading; an allowed check is the common
-        // case and repeats for every tool call in the turn.
-        if (tokenCheck.blockReason || armoriqDebug) {
+        // case and repeats for every tool call in the turn. The agent also
+        // retries a refused tool several times, so the same refusal is
+        // collapsed to one line per run rather than printed per attempt.
+        const blockLogKey = `${runKey}:${normalizedTool}:${tokenCheck.blockReason ?? ""}`;
+        const alreadyLogged = tokenCheck.blockReason ? loggedBlocks.has(blockLogKey) : false;
+        if (tokenCheck.blockReason) loggedBlocks.add(blockLogKey);
+        if ((tokenCheck.blockReason && !alreadyLogged) || armoriqDebug) {
           api.logger.info(
             `armoriq: plan check (cached token) tool=${event.toolName} steps=${
               Array.isArray(tokenCheck.plan?.steps) ? tokenCheck.plan?.steps.length : 0
