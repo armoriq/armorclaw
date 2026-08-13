@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { CryptoPolicyService, computePolicyDigest } from "./src/crypto-policy.service.js";
 import { IAPVerificationService, type CsrgProofHeaders } from "./src/iap-verfication.service.js";
-import { createObservability, OBSERVABILITY_PRODUCT } from "./src/observability.js";
+import { createObservability } from "./src/observability.js";
 import {
   PolicyStore,
   PolicyUpdateSchema,
@@ -1888,6 +1888,59 @@ function sanitizeParams(
   return isPlainObject(sanitized) ? sanitized : {};
 }
 
+/**
+ * register() runs once per agent scope, so anything logged there repeats. The
+ * banner is a startup signal for a person reading the gateway come up, not a
+ * per-scope event, so it is emitted once per process.
+ */
+let startupBannerShown = false;
+
+/**
+ * Colour only when a terminal is attached. Gateway logs are routinely piped to
+ * files and journald, where escape codes are noise.
+ */
+function paint(code: string, text: string): string {
+  return process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text;
+}
+
+/**
+ * Say plainly whether ArmorIQ is enforcing.
+ *
+ * "observability enabled" was the only startup line, which answers a question
+ * nobody asked: it reports telemetry, not protection, so a gateway that loaded
+ * the plugin but could not enforce looked identical to one that could.
+ */
+function logStartupBanner(
+  api: OpenClawPluginApi,
+  cfg: ArmorIqConfig,
+  details: { observabilityActive: boolean; policyPath: string },
+): void {
+  if (startupBannerShown) return;
+  startupBannerShown = true;
+
+  // Without a key there is no intent token, and without a token nothing is
+  // verified. The plugin is loaded but it is not protecting anything.
+  const connected = Boolean(cfg.apiKey);
+  if (connected) {
+    api.logger.info(
+      `armoriq: ${paint("1;32", "● ArmorIQ ACTIVE")} ${paint("32", "— intent enforcement ON")}`,
+    );
+  } else {
+    api.logger.warn(
+      `armoriq: ${paint("1;33", "● ArmorIQ LOADED, NOT ENFORCING")} ${paint("33", "— no API key")}`,
+    );
+    api.logger.warn("armoriq:   run `armoriq login`, then restart the gateway");
+  }
+
+  const facts = [
+    `agent=${cfg.agentId ?? "unset"}`,
+    `user=${cfg.userId ?? "unset"}`,
+    `policy=${details.policyPath}`,
+    `observability=${details.observabilityActive ? "on" : "off"}`,
+  ];
+  api.logger.info(`armoriq:   ${paint("2", facts.join("  "))}`);
+}
+
 export default function register(api: OpenClawPluginApi) {
   const cfg = resolveConfig(api);
 
@@ -1913,9 +1966,10 @@ export default function register(api: OpenClawPluginApi) {
     logger: api.logger,
     debug: readBoolean(process.env.ARMORIQ_DEBUG) === true,
   });
-  api.logger.info(
-    `armoriq: observability ${observability.active ? `enabled (product=${OBSERVABILITY_PRODUCT})` : "disabled"}`,
-  );
+  logStartupBanner(api, cfg, {
+    observabilityActive: observability.active,
+    policyPath: resolvePolicyStorePath(api, cfg),
+  });
 
   const handleCryptoPolicyUpdate = async (state: {
     version: number;
