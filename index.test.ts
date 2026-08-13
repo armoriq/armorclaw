@@ -298,7 +298,13 @@ describe("ArmorIQ plugin", () => {
     const beforeToolCall = handlers.get("before_tool_call")?.[0];
     const result = await beforeToolCall?.({ toolName: "web_fetch", params: {} }, ctx);
     expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("intent drift");
+    // The reason is what the model sees after a veto. A bare label left it with
+    // nothing to say and the turn ended with no reply at all, so assert it names
+    // the blocked tool, what the plan did authorise, and that it must explain.
+    expect(result?.blockReason).toContain("web_fetch");
+    expect(result?.blockReason).toContain("not in the approved intent plan");
+    expect(result?.blockReason).toContain("The plan authorised read");
+    expect(result?.blockReason).toMatch(/Tell the user/i);
   });
 
   it("plans from the structured tool list when the hook provides one", async () => {
@@ -431,7 +437,8 @@ describe("ArmorIQ plugin", () => {
     const denied = observedPolicyCalls.find(
       (c) => (c.input as { tool: string }).tool === "web_fetch",
     );
-    expect(denied?.reason).toContain("intent drift");
+    expect(denied?.reason).toContain("web_fetch");
+    expect(denied?.reason).toContain("not in the approved intent plan");
     expect(denied?.enforcementAction).toBe("block");
   });
 

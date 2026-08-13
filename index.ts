@@ -1217,6 +1217,24 @@ function resolveCsrgProofsFromToken(params: {
   return { path, proof: selectedEntry.proof, valueDigest, stepIndex };
 }
 
+/**
+ * Explain a refusal to the model, not just to the log.
+ *
+ * A bare "intent drift" string left the agent with a vetoed tool and no idea
+ * what to do next, so gpt-5.4 ended the turn without writing anything and the
+ * user saw silence on Telegram. Naming what was blocked, what the plan did
+ * authorise, and that it should say so, turns a dead turn into an explanation.
+ */
+function driftBlockReason(toolName: string, allowed: Set<string>): string {
+  const authorised = allowed.size > 0 ? Array.from(allowed).sort().join(", ") : "no tools";
+  return (
+    `ArmorIQ blocked "${toolName}": it is not in the approved intent plan for this request. ` +
+    `The plan authorised ${authorised}. Do not retry this tool or try to work around the block. ` +
+    `Tell the user plainly that ArmorIQ intent enforcement blocked "${toolName}" because it was ` +
+    `not part of the planned intent, and ask them to restate what they want done.`
+  );
+}
+
 function extractAllowedActions(plan: Record<string, unknown>): Set<string> {
   const allowed = new Set<string>();
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
@@ -1295,7 +1313,7 @@ function checkIntentTokenPlan(params: {
   if (!allowedActions.has(normalizedTool)) {
     return {
       matched: true,
-      blockReason: `ArmorIQ intent drift: tool not in plan (${params.toolName})`,
+      blockReason: driftBlockReason(params.toolName, allowedActions),
       plan: parsed.plan,
     };
   }
@@ -1941,6 +1959,7 @@ function logStartupBanner(
   api.logger.info(`armoriq:   ${paint("2", facts.join("  "))}`);
 }
 
+
 export default function register(api: OpenClawPluginApi) {
   const cfg = resolveConfig(api);
 
@@ -2378,7 +2397,11 @@ export default function register(api: OpenClawPluginApi) {
         planRecord.metadata = normalizedMetadata;
 
         const client = getClient(cfg, identity);
-        const planCapture = client.capturePlan("openclaw", event.prompt, plan, {
+        // userPrompt, not event.prompt. The envelope is stripped before planning
+        // because it is attacker-controllable, so recording the raw text would
+        // put that same content into the audit trail and hash a plan against a
+        // prompt it was never derived from.
+        const planCapture = client.capturePlan("openclaw", userPrompt, plan, {
           sessionKey: toolCtx.sessionKey,
           messageChannel: toolCtx.messageChannel,
           accountId: toolCtx.accountId,
@@ -2868,7 +2891,7 @@ export default function register(api: OpenClawPluginApi) {
     if (!cached.allowedActions.has(normalizedTool)) {
       return {
         block: true,
-        blockReason: `ArmorIQ intent drift: tool not in plan (${event.toolName})`,
+        blockReason: driftBlockReason(event.toolName, cached.allowedActions),
       };
     }
 
