@@ -1437,6 +1437,40 @@ function parseToolsFromSystemPrompt(
 }
 
 /**
+ * Find an api_key credential for a provider in OpenClaw's own auth-profile
+ * stores.
+ *
+ * Only used when the host hands the planner an OAuth credential it cannot use.
+ * The host resolves one credential per provider and has no way to know the
+ * planner needs a key specifically, so this reads the store it already wrote --
+ * agent-scoped first, since that shadows the root one -- rather than asking the
+ * user to configure the same key a second time.
+ */
+function findHostApiKeyProfile(provider: string): string | undefined {
+  const home = process.env.HOME || "";
+  if (!home) return undefined;
+  const stores = [
+    path.join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json"),
+    path.join(home, ".openclaw", "auth-profiles.json"),
+  ];
+  for (const file of stores) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        profiles?: Record<string, { type?: string; provider?: string; key?: string; apiKey?: string }>;
+      };
+      for (const entry of Object.values(parsed.profiles ?? {})) {
+        if (entry?.type !== "api_key" || entry.provider !== provider) continue;
+        const key = entry.key ?? entry.apiKey;
+        if (typeof key === "string" && key.length > 0) return key;
+      }
+    } catch {
+      // Missing or unreadable store: try the next one.
+    }
+  }
+  return undefined;
+}
+
+/**
  * The wire API a provider/model pair speaks.
  *
  * Needed in two places: to synthesise a descriptor for a model pi-ai does not
@@ -2211,16 +2245,22 @@ export default function register(api: OpenClawPluginApi) {
           typeof hostAuth === "object" && hostAuth
             ? String((hostAuth as { mode?: unknown }).mode ?? "")
             : "";
-        // Prefer the configured key when the host's credential is OAuth, since
-        // that is the case known to fail. Otherwise the host stays in charge.
-        const preferConfigured = Boolean(cfg.plannerApiKey) && hostMode === "oauth";
-        if (preferConfigured) {
-          api.logger.info(
-            "armoriq: host resolved an OAuth credential for the planner; using the configured plannerApiKey instead",
-          );
+        // An OAuth credential is the case known to fail, so look for a real key:
+        // the explicitly configured one first, then whatever the host already
+        // stored for this provider. Any other mode leaves the host in charge.
+        let apiKey = hostKey || cfg.plannerApiKey;
+        let credentialMode = hostMode;
+        if (hostMode === "oauth") {
+          const replacement = cfg.plannerApiKey ?? findHostApiKeyProfile(event.provider);
+          if (replacement) {
+            apiKey = replacement;
+            credentialMode = "api_key";
+            api.logger.info(
+              `armoriq: host resolved an OAuth credential for ${event.provider}, which cannot ` +
+                "call the planner API; using an API key instead",
+            );
+          }
         }
-        const apiKey = preferConfigured ? cfg.plannerApiKey : hostKey || cfg.plannerApiKey;
-        const credentialMode = preferConfigured ? "api_key" : hostMode;
         if (!apiKey) {
           throw new Error(`No API key available for provider ${event.provider}`);
         }
