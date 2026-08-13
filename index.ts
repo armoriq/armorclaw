@@ -2983,6 +2983,15 @@ export default function register(api: OpenClawPluginApi) {
     const cached = planCache.get(runKey) ?? planCache.get(sessionKeyIndex.get(runKey) ?? "");
 
     if (!cached) {
+      // A missing plan blocks every tool, and the cause is almost always a key
+      // mismatch rather than an absent plan: the plan is stored under the
+      // llm_input run key and looked up under the tool call's. Print both and
+      // what is actually held, so the shapes can be compared directly.
+      api.logger.warn(
+        `armoriq: no intent plan for this run — tool=${normalizedTool} ` +
+          `lookupKey="${runKey}" cachedKeys=[${[...planCache.keys()].join(" | ")}] ` +
+          `indexed="${sessionKeyIndex.get(runKey) ?? ""}"`,
+      );
       return {
         block: true,
         blockReason: "ArmorIQ intent plan missing for this run",
