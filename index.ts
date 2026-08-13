@@ -1447,6 +1447,55 @@ function stripUntrustedMetadata(prompt: string): string {
  * steps. Every subsequent tool call was then blocked as intent drift. The
  * enforcement was right; the plan it enforced against was built blind.
  */
+/** Tool names that mean the agent can touch the filesystem or a shell. */
+const EXECUTION_TOOL_NAMES = new Set([
+  "exec",
+  "bash",
+  "shell",
+  "run_command",
+  "read",
+  "read_file",
+  "write",
+  "write_file",
+  "edit",
+  "apply_patch",
+  "glob",
+  "grep",
+]);
+
+/**
+ * Warn when the planner is offered no execution tools.
+ *
+ * Under the Codex agent runtime, Codex owns the canonical record for its native
+ * tools and OpenClaw's llm_input hook only carries OpenClaw-registered ones. The
+ * planner was handed 22 plugin tools -- message, tts, image_generate, sessions_*,
+ * memory_* -- with no exec, read or write anywhere in the list, so it could not
+ * plan the shell call the request needed. before_tool_call still sees exec via
+ * the native hook relay, so the call was refused as intent drift.
+ *
+ * The result is that enforcement looks like it is working while every
+ * filesystem or shell request fails: planning is blind to exactly the tools
+ * that matter most. Say so once, rather than leaving it as an unexplained
+ * pattern of drift blocks.
+ */
+function warnIfExecutionToolsHidden(
+  api: OpenClawPluginApi,
+  tools: Array<{ name: string }>,
+  /** Per-plugin-instance latch, so the warning is said once, not per turn. */
+  state: { warned: boolean },
+): void {
+  if (state.warned || tools.length === 0) return;
+  if (tools.some((t) => EXECUTION_TOOL_NAMES.has(t.name.toLowerCase()))) return;
+  state.warned = true;
+  api.logger.warn(
+    "armoriq: the planner was offered no execution tools (no exec/read/write). " +
+      "Intent plans cannot authorise them, so shell and filesystem requests will " +
+      "be blocked as drift. This is what the Codex agent runtime looks like: it " +
+      "owns its native tools and they never reach the planner. Disable it with " +
+      'plugins.entries.codex.enabled = false in openclaw.json to restore planning.',
+  );
+}
+
 function resolveAvailableTools(event: {
   tools?: unknown[];
   systemPrompt?: string;
@@ -2039,6 +2088,8 @@ export default function register(api: OpenClawPluginApi) {
   const armoriqDebug = readBoolean(process.env.ARMORIQ_DEBUG) === true;
   /** Block lines already printed, so agent retries do not repeat them. */
   const loggedBlocks = new Set<string>();
+  /** Latch for the "planner cannot see execution tools" warning. */
+  const executionToolWarning = { warned: false };
 
   if (!cfg.enabled) {
     api.logger.info("armoriq: plugin disabled (set plugins.entries.armoriq.enabled=true)");
@@ -2408,6 +2459,7 @@ export default function register(api: OpenClawPluginApi) {
             tools.length === 0 ? " — plan will be empty and every tool call blocked" : ""
           }`,
         );
+        warnIfExecutionToolsHidden(api, tools, executionToolWarning);
         // The host's credential for a provider is not necessarily usable for
         // the API the planner calls. OpenClaw resolves one credential per
         // provider, and on a machine where the codex runtime has synced

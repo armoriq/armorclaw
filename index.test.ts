@@ -712,6 +712,52 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("intent plan missing");
   });
 
+  describe("hidden execution tools", () => {
+    // Verbatim from a gateway run under the Codex agent runtime: 22 OpenClaw
+    // plugin tools, no exec/read/write anywhere. Codex owns its native tools,
+    // so they never reach llm_input, and the planner cannot authorise them.
+    const CODEX_RUNTIME_TOOLS = [
+      "message", "tts", "image_generate", "video_generate", "agents_list",
+      "get_goal", "create_goal", "update_goal", "skill_workshop", "sessions_list",
+      "sessions_history", "sessions_send", "sessions_spawn", "sessions_yield",
+      "subagents", "session_status", "web_fetch", "image", "pdf",
+      "memory_search", "memory_get", "policy_update",
+    ].map((name) => ({ name }));
+
+    async function warningsFor(toolNames: Array<{ name: string }>) {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-hidden-"));
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyStorePath: join(dir, "policy.json"),
+      });
+      register(api as any);
+      completeSimpleMock.mockResolvedValue({ content: JSON.stringify({ steps: [] }) });
+      await fireInboundClaim(handlers);
+      await fireLlmInput(
+        handlers,
+        `run-hidden-${toolNames.length}`,
+        "what are the 5 biggest files in /tmp",
+        "",
+        toolNames,
+      );
+      return (api.logger.warn as any).mock.calls.flat().map(String).join("\n");
+    }
+
+    it("warns when no execution tool is offered", async () => {
+      const warned = await warningsFor(CODEX_RUNTIME_TOOLS);
+      expect(warned).toContain("no execution tools");
+      expect(warned).toContain("codex");
+    });
+
+    it("stays quiet when exec is present", async () => {
+      const warned = await warningsFor([{ name: "exec" }, { name: "read" }, { name: "message" }]);
+      expect(warned).not.toContain("no execution tools");
+    });
+  });
+
   describe("prompt sanitisation", () => {
     // Verbatim from openclaw/plugin-sdk MESSAGE_TOOL_ONLY_DELIVERY_HINT.
     const DELIVERY_HINT =
