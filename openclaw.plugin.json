@@ -125,6 +125,10 @@
       "csrgEndpoint": {
         "type": "string",
         "default": "https://iap.armoriq.ai"
+      },
+      "plannerApiKey": {
+        "type": "string",
+        "description": "API key for the planner's own LLM call. Used when the host resolves an OAuth credential the planner API will not accept."
       }
     }
   }
