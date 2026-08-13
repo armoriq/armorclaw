@@ -2821,6 +2821,11 @@ export default function register(api: OpenClawPluginApi) {
         return null;
       }
       await policyReady;
+      // Pick up a rule written by another agent scope or by the CLI. A policy
+      // created from chat is enforced on the very next tool call, which is
+      // usually handled by a different plugin instance than the one that wrote
+      // it, so reading only this instance's memory silently ignored it.
+      await policyStore.refreshIfChanged();
       const policy = policyStore.getPolicy();
       if (!policy.rules.length) {
         return null;

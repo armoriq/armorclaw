@@ -925,6 +925,58 @@ describe("ArmorIQ plugin", () => {
     });
   });
 
+  describe("policy visibility across plugin instances", () => {
+    // The gateway constructs a plugin instance per agent scope. A rule created
+    // from chat is written by whichever instance handled policy_update and
+    // enforced by whichever handles the next tool call, and those differ.
+    // "Policy new: block the exec tool" was accepted, persisted, and then not
+    // enforced: the second instance still held the empty policy it loaded at
+    // startup, and exec ran.
+    it("enforces a rule written by another instance", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-shared-"));
+      const policyPath = join(dir, "policy.json");
+      const ctx = { agentId: "agent-1", sessionKey: "session:test" };
+      const config = {
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyUpdateEnabled: true,
+        policyUpdateAllowList: ["*"],
+        policyStorePath: policyPath,
+      };
+
+      // Both instances start with an empty store, as at gateway startup. B must
+      // exist BEFORE the rule is written, or it simply loads the rule itself and
+      // the staleness this covers never arises.
+      const a = createApi(config);
+      register(a.api as any);
+      const b = createApi(config);
+      register(b.api as any);
+      // Let both finish their initial load of the (absent) file.
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Instance A creates the rule; B knows nothing about it.
+      const factory = a.tools.find((f) => f(ctx)?.name === "policy_update");
+      await factory?.(ctx)?.execute("c1", { text: "block the exec tool" });
+      const saved = JSON.parse(await fs.readFile(policyPath, "utf8"));
+      expect(saved.policy.rules).toHaveLength(1);
+      completeSimpleMock.mockResolvedValue({
+        content: JSON.stringify({ steps: [{ action: "exec", mcp: "openclaw" }] }),
+      });
+      await fireInboundClaim(b.handlers);
+      await fireLlmInput(b.handlers, "run-shared", "run echo hello", "", [{ name: "exec" }]);
+
+      const beforeToolCall = b.handlers.get("before_tool_call")?.[0];
+      const result = await beforeToolCall?.(
+        { toolName: "exec", params: {} },
+        { runId: "run-shared", ...ctx },
+      );
+      expect(result?.block).toBe(true);
+      expect(String(result?.blockReason)).toMatch(/policy/i);
+    });
+  });
+
   describe("policy command routing", () => {
     // "delete policy1, then list all policies" used to match the trailing
     // "list", return the policy list, and drop the delete silently. The agent
