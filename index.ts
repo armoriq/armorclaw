@@ -1434,6 +1434,8 @@ async function buildPlanFromPrompt(params: {
   provider: string;
   modelId: string;
   apiKey: string;
+  /** "oauth" | "api_key" | "". Used only to explain an auth failure. */
+  credentialMode?: string;
   log: (message: string) => void;
 }): Promise<Record<string, unknown>> {
   const toolDescriptions = new Map<string, string>();
@@ -1492,8 +1494,14 @@ async function buildPlanFromPrompt(params: {
   // gpt-5.4 is in OpenClaw but not pi-ai), so this is the common case, not an
   // edge case.
   if (!model) {
-    // Fallback: minimal descriptor that at least has the api field set so
-    // resolveApiProvider() can find the provider.
+    // Fallback descriptor for a model pi-ai does not bundle. Every field here
+    // has to be usable, not merely present: this synthesised model is what the
+    // planner call actually runs on.
+    //
+    // baseUrl used to be "", which is why planning returned "Planner returned
+    // empty response" for anything outside pi-ai's catalog. A real descriptor
+    // carries the provider's API root (openai -> https://api.openai.com/v1), so
+    // an empty string sent the request nowhere.
     const apiByProvider: Record<string, Api> = {
       openai: "openai-responses",
       anthropic: "anthropic-messages",
@@ -1501,18 +1509,38 @@ async function buildPlanFromPrompt(params: {
       "google-vertex": "google-vertex",
       "azure-openai-responses": "azure-openai-responses",
     };
+    const baseUrlByProvider: Record<string, string> = {
+      openai: "https://api.openai.com/v1",
+      anthropic: "https://api.anthropic.com",
+      google: "https://generativelanguage.googleapis.com",
+      openrouter: "https://openrouter.ai/api/v1",
+    };
+    // Borrow the shape of a known model from the same provider when we can, so
+    // fields we do not enumerate here stay realistic.
+    let sibling: Model<Api> | undefined;
+    try {
+      sibling = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
+        params.provider,
+        params.provider === "openai" ? "gpt-5.2" : "",
+      );
+    } catch {
+      sibling = undefined;
+    }
     model = {
       id: params.modelId,
       name: params.modelId,
-      api: apiByProvider[params.provider] ?? "openai-responses",
+      api: sibling?.api ?? apiByProvider[params.provider] ?? "openai-responses",
       provider: params.provider,
-      baseUrl: "",
+      baseUrl: sibling?.baseUrl ?? baseUrlByProvider[params.provider] ?? "https://api.openai.com/v1",
       reasoning: false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000,
+      contextWindow: sibling?.contextWindow ?? 128000,
       maxTokens: 4096,
     } as Model<Api>;
+    params.log(
+      `armoriq: model ${params.provider}/${params.modelId} not in the bundled catalog; using ${model.baseUrl}`,
+    );
   }
   const response = await completeSimple(
     model as never,
@@ -1545,7 +1573,32 @@ async function buildPlanFromPrompt(params: {
         : "";
 
   if (!text) {
-    throw new Error("Planner returned empty response");
+    // "empty response" on its own is undiagnosable: it cannot distinguish a
+    // refusal, a truncated reasoning budget, a content shape we do not parse,
+    // or a provider error. Carry the facts that separate them.
+    const blocks = Array.isArray(content) ? content : [];
+    const kinds = blocks.map((b) => (b as { type?: string })?.type ?? "?").join(",");
+    const providerError = String(
+      (response as { errorMessage?: unknown }).errorMessage ?? "",
+    ).slice(0, 300);
+    // An OAuth credential is the common cause and the least obvious one. A
+    // ChatGPT OAuth token carries no api.responses.write scope, so the planner
+    // call 401s while the account's real API key would have worked. Say so,
+    // rather than leaving the operator to decode "insufficient permissions".
+    if (params.credentialMode === "oauth" && /scope|permission/i.test(providerError)) {
+      throw new Error(
+        `Planner auth failed: the resolved credential for ${params.provider} is an OAuth token, ` +
+          `which lacks the scope the planner needs. Configure an API key for ${params.provider} ` +
+          `(openclaw auth) so planning does not fall back to OAuth. Provider said: ${providerError}`,
+      );
+    }
+    throw new Error(
+      `Planner returned empty response (model=${params.provider}/${params.modelId} ` +
+        `promptChars=${planningPrompt.length} stopReason=${
+          String((response as { stopReason?: unknown }).stopReason ?? "?")
+        } contentType=${Array.isArray(content) ? `array[${blocks.length}]` : typeof content} ` +
+        `blockKinds=${kinds || "none"}${providerError ? ` providerError="${providerError}"` : ""})`,
+    );
   }
 
   // Strip Markdown code-fence wrappers some providers emit around JSON
@@ -2109,6 +2162,10 @@ export default function register(api: OpenClawPluginApi) {
           provider: event.provider,
         });
         const apiKey = typeof authResult === "string" ? authResult : authResult?.apiKey ?? authResult?.key;
+        const credentialMode =
+          typeof authResult === "object" && authResult
+            ? String((authResult as { mode?: unknown }).mode ?? "")
+            : "";
         if (!apiKey) {
           throw new Error(`No API key available for provider ${event.provider}`);
         }
@@ -2124,6 +2181,7 @@ export default function register(api: OpenClawPluginApi) {
           provider: event.provider,
           modelId: event.model,
           apiKey,
+          credentialMode,
           log: (message) => api.logger.info(message),
         });
         const planRecord = plan as Record<string, unknown>;
