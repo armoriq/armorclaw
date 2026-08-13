@@ -42,6 +42,7 @@ type ArmorIqConfig = {
   policyUpdateAllowList?: string[];
   cryptoPolicyEnabled?: boolean;
   observabilityEnabled?: boolean;
+  plannerApiKey?: string;
   csrgEndpoint?: string;
   validitySeconds: number;
   useProduction?: boolean;
@@ -615,6 +616,13 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
     observabilityEnabled:
       readBoolean(raw.observabilityEnabled) ??
       (readBoolean(process.env.ARMORIQ_OBSERVABILITY_DISABLED) === true ? false : undefined),
+    // An explicit key for the planner's own LLM call, independent of whatever
+    // credential the host happens to resolve for the provider. See the call
+    // site for why the host's answer cannot be trusted on its own.
+    plannerApiKey:
+      readString(raw.plannerApiKey) ??
+      readString(process.env.ARMORIQ_PLANNER_API_KEY) ??
+      readString(process.env.OPENAI_API_KEY),
     csrgEndpoint:
       readString(raw.csrgEndpoint) ?? readString(process.env.CSRG_URL) ?? endpoints.csrgEndpoint,
     validitySeconds: readNumber(raw.validitySeconds) ?? DEFAULT_VALIDITY_SECONDS,
@@ -1428,6 +1436,34 @@ function parseToolsFromSystemPrompt(
   return tools;
 }
 
+/**
+ * The wire API a provider/model pair speaks.
+ *
+ * Needed in two places: to synthesise a descriptor for a model pi-ai does not
+ * bundle, and to tell OpenClaw's credential resolver which API the planner is
+ * about to call. The second one matters more than it looks -- see the call site.
+ */
+const PLANNER_API_BY_PROVIDER: Record<string, Api> = {
+  openai: "openai-responses",
+  anthropic: "anthropic-messages",
+  google: "google-generative-ai",
+  "google-vertex": "google-vertex",
+  "azure-openai-responses": "azure-openai-responses",
+};
+
+function resolvePlannerModelApi(provider: string, modelId: string): Api {
+  let bundled: Model<Api> | undefined;
+  try {
+    bundled = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
+      provider,
+      modelId,
+    );
+  } catch {
+    bundled = undefined;
+  }
+  return bundled?.api ?? PLANNER_API_BY_PROVIDER[provider] ?? "openai-responses";
+}
+
 async function buildPlanFromPrompt(params: {
   prompt: string;
   tools?: Array<{ name: string; description?: string }>;
@@ -1502,13 +1538,6 @@ async function buildPlanFromPrompt(params: {
     // empty response" for anything outside pi-ai's catalog. A real descriptor
     // carries the provider's API root (openai -> https://api.openai.com/v1), so
     // an empty string sent the request nowhere.
-    const apiByProvider: Record<string, Api> = {
-      openai: "openai-responses",
-      anthropic: "anthropic-messages",
-      google: "google-generative-ai",
-      "google-vertex": "google-vertex",
-      "azure-openai-responses": "azure-openai-responses",
-    };
     const baseUrlByProvider: Record<string, string> = {
       openai: "https://api.openai.com/v1",
       anthropic: "https://api.anthropic.com",
@@ -1529,7 +1558,7 @@ async function buildPlanFromPrompt(params: {
     model = {
       id: params.modelId,
       name: params.modelId,
-      api: sibling?.api ?? apiByProvider[params.provider] ?? "openai-responses",
+      api: sibling?.api ?? PLANNER_API_BY_PROVIDER[params.provider] ?? "openai-responses",
       provider: params.provider,
       baseUrl: sibling?.baseUrl ?? baseUrlByProvider[params.provider] ?? "https://api.openai.com/v1",
       reasoning: false,
@@ -2158,14 +2187,40 @@ export default function register(api: OpenClawPluginApi) {
             tools.length === 0 ? " — plan will be empty and every tool call blocked" : ""
           }`,
         );
-        const authResult = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
+        // The host's credential for a provider is not necessarily usable for
+        // the API the planner calls. OpenClaw resolves one credential per
+        // provider, and on a machine where the codex runtime has synced
+        // ~/.codex/auth.json it hands back a ChatGPT OAuth token for "openai".
+        // That token carries no api.responses.write scope, so every planner
+        // call 401s and every plan comes back empty -- which surfaces as the
+        // agent refusing ordinary requests.
+        //
+        // OpenClaw does guard against this (isAuthModeAllowedForModel skips
+        // OAuth profiles when modelApi says the API needs a key), but the
+        // plugin runtime forwards only { provider, cfg, workspaceDir } to the
+        // resolver, so modelApi never arrives and the guard cannot fire for a
+        // plugin. modelApi is passed anyway: harmless now, correct if that
+        // whitelist is widened. Until then an explicit key is the only way a
+        // plugin can be sure of what it is authenticating with.
+        const hostAuth = await (api as any).runtime.modelAuth.resolveApiKeyForProvider({
           provider: event.provider,
+          modelApi: resolvePlannerModelApi(event.provider, event.model),
         });
-        const apiKey = typeof authResult === "string" ? authResult : authResult?.apiKey ?? authResult?.key;
-        const credentialMode =
-          typeof authResult === "object" && authResult
-            ? String((authResult as { mode?: unknown }).mode ?? "")
+        const hostKey = typeof hostAuth === "string" ? hostAuth : hostAuth?.apiKey ?? hostAuth?.key;
+        const hostMode =
+          typeof hostAuth === "object" && hostAuth
+            ? String((hostAuth as { mode?: unknown }).mode ?? "")
             : "";
+        // Prefer the configured key when the host's credential is OAuth, since
+        // that is the case known to fail. Otherwise the host stays in charge.
+        const preferConfigured = Boolean(cfg.plannerApiKey) && hostMode === "oauth";
+        if (preferConfigured) {
+          api.logger.info(
+            "armoriq: host resolved an OAuth credential for the planner; using the configured plannerApiKey instead",
+          );
+        }
+        const apiKey = preferConfigured ? cfg.plannerApiKey : hostKey || cfg.plannerApiKey;
+        const credentialMode = preferConfigured ? "api_key" : hostMode;
         if (!apiKey) {
           throw new Error(`No API key available for provider ${event.provider}`);
         }

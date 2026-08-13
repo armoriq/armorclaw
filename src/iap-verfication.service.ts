@@ -138,7 +138,7 @@ async function postJson<T>(
         // logging failed silently for exactly that reason: the call is
         // fire-and-forget, so nothing surfaced to the user and the compliance
         // trail simply did not exist.
-        ...(apiKey ? { "X-API-Key": apiKey } : {}),
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),   
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
