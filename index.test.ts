@@ -925,6 +925,69 @@ describe("ArmorIQ plugin", () => {
     });
   });
 
+  describe("reply channel", () => {
+    // On channel runs OpenClaw does not auto-deliver assistant text; the agent
+    // must call `message`. The delivery directive is stripped from the planner
+    // prompt on purpose, so the planner never plans it. A policy_update turn
+    // therefore planned [policy_update], created the rule, and had no
+    // authorised way to report it: the gateway logged "visible channel turn
+    // dispatched with no queued reply payloads" and the user saw nothing.
+    it("permits the delivery tool even when the plan does not name it", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-delivery-"));
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyStorePath: join(dir, "policy.json"),
+      });
+      register(api as any);
+      completeSimpleMock.mockResolvedValue({
+        content: JSON.stringify({ steps: [{ action: "policy_update", mcp: "openclaw" }] }),
+      });
+      await fireInboundClaim(handlers);
+      await fireLlmInput(handlers, "run-delivery", "Policy new: block the exec tool", "", [
+        { name: "policy_update" },
+      ]);
+
+      const beforeToolCall = handlers.get("before_tool_call")?.[0];
+      const result = await beforeToolCall?.(
+        { toolName: "message", params: { text: "Done — policy1 now denies exec." } },
+        { runId: "run-delivery", agentId: "agent-1", sessionKey: "session:test" },
+      );
+      expect(result?.block).not.toBe(true);
+    });
+
+    it("still bounds what the agent may do", async () => {
+      const dir = await fs.mkdtemp(join(tmpdir(), "armoriq-delivery2-"));
+      const { api, handlers } = createApi({
+        enabled: true,
+        apiKey: "ak_live_test",
+        userId: "user-1",
+        agentId: "agent-1",
+        policyStorePath: join(dir, "policy.json"),
+      });
+      register(api as any);
+      completeSimpleMock.mockResolvedValue({
+        content: JSON.stringify({ steps: [{ action: "policy_update", mcp: "openclaw" }] }),
+      });
+      await fireInboundClaim(handlers);
+      await fireLlmInput(handlers, "run-delivery2", "Policy new: block exec", "", [
+        { name: "policy_update" },
+      ]);
+
+      const beforeToolCall = handlers.get("before_tool_call")?.[0];
+      const result = await beforeToolCall?.(
+        { toolName: "exec", params: {} },
+        { runId: "run-delivery2", agentId: "agent-1", sessionKey: "session:test" },
+      );
+      expect(result?.block).toBe(true);
+      // The reply channel must not appear as planned work in the refusal.
+      expect(String(result?.blockReason)).toContain("The plan authorised policy_update");
+      expect(String(result?.blockReason)).not.toContain("message,");
+    });
+  });
+
   describe("policy update confirmations", () => {
     async function policyTool(dir: string) {
       const { api, tools } = createApi({

@@ -1299,7 +1299,13 @@ function summariseReason(reason: string): string {
 }
 
 function driftBlockReason(toolName: string, allowed: Set<string>): string {
-  const authorised = allowed.size > 0 ? Array.from(allowed).sort().join(", ") : "no tools";
+  // Report the planned work, not the reply channel. `message` is added to every
+  // plan so the agent can answer at all, and naming it here would describe the
+  // plan as authorising something the user never asked for.
+  const planned = Array.from(allowed).filter(
+    (name) => !DELIVERY_TOOL_NAMES.includes(name as (typeof DELIVERY_TOOL_NAMES)[number]),
+  );
+  const authorised = planned.length > 0 ? planned.sort().join(", ") : "no tools";
   return (
     `ArmorIQ blocked "${toolName}": it is not in the approved intent plan for this request. ` +
     `The plan authorised ${authorised}.\n` +
@@ -1317,8 +1323,30 @@ function driftBlockReason(toolName: string, allowed: Set<string>): string {
   );
 }
 
+/**
+ * Tools the agent uses to talk back, rather than to act on the world.
+ *
+ * On channel runs OpenClaw does not auto-deliver the assistant's text: the agent
+ * must call `message` to say anything at all. That directive is stripped from
+ * the planner prompt on purpose -- left in, the planner planned for it and
+ * authorised sessions_spawn/sessions_yield/message instead of the actual request
+ * -- so the planner cannot be expected to predict it either.
+ *
+ * Leaving delivery to the plan meant a policy_update turn planned
+ * [policy_update], did the work, and then had no authorised way to report it:
+ * the rule was created and the user was told nothing.
+ *
+ * Refusing delivery is not a security control. The reply text already exists by
+ * then; blocking it only hides the outcome from the person who asked. What the
+ * agent may *do* is still bounded by the plan.
+ */
+const DELIVERY_TOOL_NAMES = ["message"] as const;
+
 function extractAllowedActions(plan: Record<string, unknown>): Set<string> {
   const allowed = new Set<string>();
+  for (const name of DELIVERY_TOOL_NAMES) {
+    allowed.add(name);
+  }
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
   for (const step of steps) {
     if (!step || typeof step !== "object") {
