@@ -31,7 +31,13 @@ jobs:
         id: dist-tag
         run: |
           TAG_NAME="${{ github.ref_name }}"
-          if echo "$TAG_NAME" | grep -qE '^v2026\.2'; then
+          # Maintenance channels: each MAJOR.MINOR line publishes under an
+          # openclaw-<line> npm dist-tag so people on that OpenClaw LTS can
+          # `npm install armorclaw@openclaw-<line>` and get a compatible
+          # build without hunting through the changelog.
+          if echo "$TAG_NAME" | grep -qE '^v2026\.6'; then
+            echo "tag=openclaw-2026.6" >> "$GITHUB_OUTPUT"
+          elif echo "$TAG_NAME" | grep -qE '^v2026\.2'; then
             echo "tag=openclaw-2026.2" >> "$GITHUB_OUTPUT"
           else
             echo "tag=latest" >> "$GITHUB_OUTPUT"

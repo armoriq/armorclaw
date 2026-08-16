@@ -2,6 +2,8 @@
 
 Intent-based security enforcement for OpenClaw AI agents. Protect your AI assistant from prompt injection, data exfiltration, and unauthorized tool execution.
 
+**Verified against OpenClaw `2026.6.34` (LTS).** The plugin also runs on the current beta channel; both are exercised in CI.
+
 ## Features
 
 - **Intent Verification** - Every tool execution must be part of an approved plan

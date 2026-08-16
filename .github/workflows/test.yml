@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [main, v2026.2]
+    branches: [main, v2026.2, v2026.6]
   pull_request:
-    branches: [main, v2026.2]
+    branches: [main, v2026.2, v2026.6]
 
 jobs:
   test:
@@ -12,18 +12,26 @@ jobs:
     strategy:
       matrix:
         node-version: [20, 22]
+        # Explicit OpenClaw compat matrix. The dev pin in package.json is
+        # the LTS (2026.6.34); this second cell also proves us green on
+        # the current beta release channel so we know before it becomes
+        # the next LTS.
+        openclaw-version: ['2026.6.34', 'latest']
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      
+
       - name: Install dependencies
         run: npm install
-      
+
+      - name: Pin OpenClaw for this matrix cell
+        run: npm install --no-save "openclaw@${{ matrix.openclaw-version }}"
+
       - name: Run tests
         run: npm test
-      
+
       - name: Build
         run: npm run build
