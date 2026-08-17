@@ -1314,12 +1314,19 @@ function driftBlockReason(toolName: string, allowed: Set<string>): string {
     // directory listing for a tool that never ran. A refusal the model can
     // paper over is worse than a silent one, because the answer looks real.
     `You received NO DATA from this tool. It did not run.\n` +
-    `You MUST NOT invent, guess, recall, or infer what its output would have been. ` +
-    `Do not answer the user's question from memory or assumption.\n` +
-    `Do not retry this tool and do not attempt another tool to achieve the same thing.\n` +
-    `Reply to the user with exactly this: that ArmorIQ intent enforcement blocked ` +
-    `"${toolName}" because it was not part of the planned intent, that you therefore ` +
-    `have no result to report, and ask them to restate what they want done.`
+    `You MUST NOT invent, guess, recall, or infer what its output would have been.\n` +
+    `Do not retry "${toolName}".\n` +
+    // Earlier wording told the agent to stop and report, full stop. That killed
+    // whole turns over an incidental call: "run the shell command: echo hello"
+    // planned exec, the agent first reached for `read` to load memory files,
+    // that one call was refused, and the agent abandoned the request and
+    // reported the block -- while exec, the tool that would have answered, was
+    // authorised and never tried.
+    `If you can still complete the user's request using the tools the plan DID ` +
+    `authorise (${authorised}), do that now and answer normally.\n` +
+    `Only if the request cannot be completed without "${toolName}", tell the user ` +
+    `plainly that ArmorIQ intent enforcement blocked it and ask them to restate ` +
+    `what they want done.`
   );
 }
 

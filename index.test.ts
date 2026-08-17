@@ -304,7 +304,11 @@ describe("ArmorIQ plugin", () => {
     expect(result?.blockReason).toContain("web_fetch");
     expect(result?.blockReason).toContain("not in the approved intent plan");
     expect(result?.blockReason).toContain("The plan authorised read");
-    expect(result?.blockReason).toMatch(/reply to the user/i);
+    expect(result?.blockReason).toMatch(/tell the user/i);
+    // A blocked incidental call must not abandon the turn: "echo hello" planned
+    // exec, the agent reached for read first, and reporting the block instead of
+    // running exec meant a permitted request answered nothing.
+    expect(result?.blockReason).toMatch(/complete the user's request using the tools the plan DID authorise/i);
     // The model answered a blocked directory listing by inventing 365 files.
     // A refusal it can paper over is worse than a silent one, so the message
     // must state there is no data and forbid supplying one from memory.
