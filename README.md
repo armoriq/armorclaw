@@ -174,6 +174,70 @@ Agent tries: read sensitive_credentials.txt
 ArmorClaw blocks — file read not in approved plan
 ```
 
+**TweetClaw Mutation Policy**
+
+When OpenClaw users install [TweetClaw](https://github.com/Xquik-dev/tweetclaw)
+for X/Twitter automation, keep local endpoint discovery available. Require
+ArmorClaw policy approval for every live mutation:
+
+```bash
+openclaw plugins install clawhub:@xquik/tweetclaw
+openclaw config set tools.alsoAllow '["explore", "tweetclaw"]'
+```
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "armorclaw": {
+        "config": {
+          "policy": {
+            "rules": [
+              {
+                "id": "allow-tweetclaw-catalog",
+                "action": "allow",
+                "tool": "explore"
+              },
+              {
+                "id": "review-tweetclaw-post",
+                "action": "require_approval",
+                "tool": "tweetclaw",
+                "params": { "method": "POST" }
+              },
+              {
+                "id": "review-tweetclaw-patch",
+                "action": "require_approval",
+                "tool": "tweetclaw",
+                "params": { "method": "PATCH" }
+              },
+              {
+                "id": "review-tweetclaw-put",
+                "action": "require_approval",
+                "tool": "tweetclaw",
+                "params": { "method": "PUT" }
+              },
+              {
+                "id": "review-tweetclaw-delete",
+                "action": "require_approval",
+                "tool": "tweetclaw",
+                "params": { "method": "DELETE" }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+TweetClaw passes concrete paths for calls such as direct messages. Matching the
+HTTP method covers those calls without relying on placeholder path segments.
+The boundary protects tweets, replies, direct messages, media, monitors,
+webhooks, and extraction jobs. TweetClaw still applies its own safety checks.
+
+Xquik is an independent third-party service. Not affiliated with X Corp. "Twitter" and "X" are trademarks of X Corp.
+
 ## Policy Configuration
 
 Define local policies for additional control:

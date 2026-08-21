@@ -724,7 +724,6 @@ function resolveConfig(api: OpenClawPluginApi): ArmorIqConfig {
       endpoints.backendEndpoint,
     proxyEndpoints: readRecord(raw.proxyEndpoints) as Record<string, string> | undefined,
     timeoutMs: readNumber(raw.timeoutMs),
-    maxRetries: readNumber(raw.maxRetries),
     verifySsl: readBoolean(raw.verifySsl),
     maxParamChars: readNumber(raw.maxParamChars) ?? DEFAULT_MAX_PARAM_CHARS,
     maxParamDepth: readNumber(raw.maxParamDepth) ?? DEFAULT_MAX_PARAM_DEPTH,
