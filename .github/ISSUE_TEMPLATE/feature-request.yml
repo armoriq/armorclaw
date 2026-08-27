@@ -1,0 +1,63 @@
+name: Feature Request
+description: Propose a new feature or capability
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the new feature you'd like to see added.
+
+  - type: dropdown
+    id: service
+    attributes:
+      label: Target Service / Component
+      options:
+        - Backend
+        - Frontend
+        - Proxy Server
+        - SDK (TypeScript)
+        - SDK (Python)
+        - OPA / Policy Engine
+        - CSRG
+        - Agent
+        - Admin Dashboard
+        - Cross-service
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      placeholder: Describe the problem this feature would solve or the use case it enables.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      placeholder: Describe how you think this should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: Any workarounds or alternative approaches you've considered.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: Mockups, references, related issues, or anything else that helps.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched for existing issues before creating this one.
+          required: true

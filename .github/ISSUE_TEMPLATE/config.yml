@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/armoriq/.github/security/policy
+    about: Report security vulnerabilities through GitHub's security advisory feature.
