@@ -1,0 +1,24 @@
+name: Add issues to ArmorIQ board
+on:
+  issues:
+    types: [opened, reopened]
+jobs:
+  add-to-board:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add to project
+        id: add
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/orgs/armoriq/projects/1
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+      - name: Set Status to Backlog
+        if: steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+        run: |
+          gh project item-edit \
+            --id "${{ steps.add.outputs.itemId }}" \
+            --project-id PVT_kwDODhptWM4BKTiz \
+            --field-id PVTSSF_lADODhptWM4BKTizzg6NlW4 \
+            --single-select-option-id f75ad846
