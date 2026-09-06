@@ -1,0 +1,66 @@
+name: Add issues to ArmorIQ board
+on:
+  issues:
+    types: [opened, reopened]
+jobs:
+  add-to-board:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add to project
+        id: add
+        uses: actions/add-to-project@244f685bbc3b7adfa8466e08b698b5577571133e # v1.0.2
+        continue-on-error: true
+        with:
+          project-url: https://github.com/orgs/armoriq/projects/1
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+      - name: Resolve project item ID
+        id: item
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+          ADD_ITEM_ID: ${{ steps.add.outputs.itemId }}
+          PROJECT_ID: PVT_kwDODhptWM4BKTiz
+        run: |
+          set -euo pipefail
+          if [ -n "${ADD_ITEM_ID:-}" ]; then
+            echo "item_id=${ADD_ITEM_ID}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The add step yields no itemId when the issue is already on the
+          # board (e.g. a reopened issue), so resolve the existing item.
+          # Traverse the whole item connection until the issue is found or
+          # GitHub reports no next page (projects can hold up to 50k items).
+          cursor=""
+          item_id=""
+          while true; do
+            if [ -z "$cursor" ]; then
+              page=$(gh api graphql -f query='query($projectId: ID!) { node(id: $projectId) { ... on ProjectV2 { items(first: 100) { nodes { id content { __typename ... on Issue { id } ... on PullRequest { id } } } pageInfo { hasNextPage endCursor } } } } }' -F projectId="$PROJECT_ID")
+            else
+              page=$(gh api graphql -f query='query($projectId: ID!, $cursor: String) { node(id: $projectId) { ... on ProjectV2 { items(first: 100, after: $cursor) { nodes { id content { __typename ... on Issue { id } ... on PullRequest { id } } } pageInfo { hasNextPage endCursor } } } } }' -F projectId="$PROJECT_ID" -F cursor="$cursor")
+            fi
+            found=$(echo "$page" | jq -r --arg issue "$ISSUE_NODE_ID" '.data.node.items.nodes[] | select(.content.id == $issue) | .id' | head -n 1)
+            if [ -n "$found" ]; then
+              item_id="$found"
+              break
+            fi
+            has_next=$(echo "$page" | jq -r '.data.node.items.pageInfo.hasNextPage')
+            if [ "$has_next" != "true" ]; then
+              break
+            fi
+            cursor=$(echo "$page" | jq -r '.data.node.items.pageInfo.endCursor')
+          done
+          if [ -z "$item_id" ]; then
+            echo "::error::Could not resolve project item ID for issue node ${ISSUE_NODE_ID}"
+            exit 1
+          fi
+          echo "item_id=${item_id}" >> "$GITHUB_OUTPUT"
+      - name: Set Status to Backlog
+        if: steps.item.outputs.item_id != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+        run: |
+          gh project item-edit \
+            --id "${{ steps.item.outputs.item_id }}" \
+            --project-id PVT_kwDODhptWM4BKTiz \
+            --field-id PVTSSF_lADODhptWM4BKTizzg6NlW4 \
+            --single-select-option-id f75ad846
