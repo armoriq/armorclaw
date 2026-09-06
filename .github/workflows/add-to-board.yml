@@ -28,9 +28,11 @@ jobs:
           fi
           # The add step yields no itemId when the issue is already on the
           # board (e.g. a reopened issue), so resolve the existing item.
+          # Traverse the whole item connection until the issue is found or
+          # GitHub reports no next page (projects can hold up to 50k items).
           cursor=""
           item_id=""
-          for _ in $(seq 1 20); do
+          while true; do
             if [ -z "$cursor" ]; then
               page=$(gh api graphql -f query='query($projectId: ID!) { node(id: $projectId) { ... on ProjectV2 { items(first: 100) { nodes { id content { __typename ... on Issue { id } ... on PullRequest { id } } } pageInfo { hasNextPage endCursor } } } } }' -F projectId="$PROJECT_ID")
             else
