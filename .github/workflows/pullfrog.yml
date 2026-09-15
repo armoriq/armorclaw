@@ -1,6 +1,8 @@
 name: Pullfrog
 run-name: ${{ inputs.name || github.workflow }}
 on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
     inputs:
       prompt:
@@ -16,6 +18,8 @@ permissions:
 jobs:
   pullfrog:
     runs-on: ubuntu-latest
+    # Drafts wait for ready_for_review; bot PRs are skipped by the console default.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     permissions:
       id-token: write
       contents: read
@@ -27,4 +31,11 @@ jobs:
       - name: Run agent
         uses: pullfrog/pullfrog@v0
         with:
-          prompt: ${{ inputs.prompt }}
+          # Label routing: Review-requested -> Sol/medium full review,
+          # everything else -> Luna/high standard review. The model is always
+          # explicit, so auto-select can never resolve to a top tier (Astra).
+          # Dispatched runs have no pull_request object, so they take the default.
+          prompt: ${{ inputs.prompt || 'Review this pull request per the repo review instructions and the CLAUDE.md merge quality bar.' }}
+          model: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'Review-requested') && 'openai/gpt-sol' || 'openai/gpt-luna' }}
+          effort: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'Review-requested') && 'medium' || 'high' }}
+          progress_comments: disabled
