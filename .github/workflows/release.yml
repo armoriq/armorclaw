@@ -1,7 +1,8 @@
 name: Release
 
 # A release is cut by changing the version in package.json on main. workflow_dispatch re-runs
-# the same path, which is how a run that failed after tagging is retried. Tagging, the GitHub
+# the same path, which is how a run that failed part way is retried: every step below is safe to
+# repeat, and a version counts as released only once it is on npm. Tagging, the GitHub
 # release and the npm publish live in one workflow because a release created with GITHUB_TOKEN
 # does not trigger other workflows.
 on:
@@ -36,23 +37,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # npm is what installed plugins update from, so a version already there is released even
+      # when its tag or GitHub release is missing (2026.8.5 and earlier were published by hand).
       - name: Read the version and look for an existing release
         id: read
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(node -p 'require("./package.json").version')
           echo "version=$version" >> "$GITHUB_OUTPUT"
           released=false
-          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then released=true; fi
-          if gh release view "v$version" >/dev/null 2>&1; then released=true; fi
+          if npm view "@armoriq/armorclaw@$version" version 2>/dev/null | grep -qx "$version"; then released=true; fi
           echo "released=$released" >> "$GITHUB_OUTPUT"
           # Maintenance lines publish under an openclaw-<line> dist-tag so a user on that
-          # OpenClaw LTS can install a compatible build; everything else is latest, which is
-          # what installed plugins update to.
+          # OpenClaw LTS can install a compatible build. A prerelease goes to next, since latest
+          # is what every installed plugin updates to. YYYY.M.P-N is an OpenClaw stable
+          # correction, not a prerelease.
           case "$version" in
             2026.6.*) tag=openclaw-2026.6 ;;
             2026.2.*) tag=openclaw-2026.2 ;;
+            *-*[!0-9]*) tag=next ;;
             *) tag=latest ;;
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -84,13 +86,6 @@ jobs:
       - name: Install dependencies
         run: npm install --no-save "openclaw@${OPENCLAW_VERSION}"
 
-      - name: Check the version is not already on npm
-        run: |
-          if npm view "@armoriq/armorclaw@$VERSION" version >/dev/null 2>&1; then
-            echo "@armoriq/armorclaw@$VERSION is already published"
-            exit 1
-          fi
-
       - name: Test
         run: npx vitest run
 
@@ -117,24 +112,39 @@ jobs:
             require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `tarball=${pack.filename}\n`);
           '
 
-      # The tag is immutable: created once, never moved, and plan refuses a version whose tag exists.
+      # The tag is immutable: created once and never moved. A tag left by a failed run is reused
+      # only when it already points at this commit.
       - name: Tag the released commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            tagged=$(git rev-parse "v$VERSION^{commit}")
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "tag v$VERSION points at $tagged, not $GITHUB_SHA; refusing to move it"
+              exit 1
+            fi
+            echo "tag v$VERSION already points at this commit; reusing it"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VERSION" -m "Release v$VERSION" "$GITHUB_SHA"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "v$VERSION"
 
       - name: Create the GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ env.VERSION }}
-          name: v${{ env.VERSION }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-          files: ${{ steps.pack.outputs.tarball }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "release v$VERSION already exists"
+            exit 0
+          fi
+          prerelease=()
+          if [ "$DIST_TAG" = next ]; then prerelease=(--prerelease); fi
+          gh release create "v$VERSION" "$TARBALL" "${prerelease[@]}" \
+            --title "v$VERSION" --verify-tag --generate-notes
 
       # Installed plugins update from the npm dist-tag, so this is the step that reaches users.
       - name: Publish to npm
