@@ -101,7 +101,7 @@ describe("checkAndUpdate", () => {
     const opts = options({ env: { npm_config_registry: "http://127.0.0.1:4873/" } });
     await checkAndUpdate(opts);
     expect(opts.fetchImpl).toHaveBeenCalledWith(
-      "http://127.0.0.1:4873/-/package/@armoriq%2farmorclaw/dist-tags",
+      "http://127.0.0.1:4873/-/package/%40armoriq%2Farmorclaw/dist-tags",
       expect.anything(),
     );
   });

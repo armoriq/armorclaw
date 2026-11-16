@@ -127,7 +127,7 @@ function writeState(file: string, state: Record<string, unknown>): void {
 
 async function latestVersion(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): Promise<string> {
   const registry = (env.npm_config_registry?.trim() || DEFAULT_REGISTRY).replace(/\/+$/, "");
-  const response = await fetchImpl(`${registry}/-/package/${PACKAGE_NAME.replace("/", "%2f")}/dist-tags`, {
+  const response = await fetchImpl(`${registry}/-/package/${encodeURIComponent(PACKAGE_NAME)}/dist-tags`, {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
   });
