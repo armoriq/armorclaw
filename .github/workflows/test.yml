@@ -10,13 +10,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [20, 22]
-        # Explicit OpenClaw compat matrix. The dev pin in package.json is
-        # the LTS (2026.6.34); this second cell also proves us green on
-        # the current beta release channel so we know before it becomes
-        # the next LTS.
-        openclaw-version: ['2026.6.34', 'latest']
+        # OpenClaw 2026.6.34 needs Node >=22.19 and 2026.7.1 (the installer's pin) >=22.22.3,
+        # so Node 20 could never install them. OpenClaw >=2026.9 drops the openclaw/plugin-sdk
+        # entry this plugin imports, so it is not in the matrix until the plugin moves off it.
+        node-version: [22]
+        openclaw-version: ['2026.6.34', '2026.7.1']
     steps:
       - uses: actions/checkout@v4
 
@@ -24,10 +24,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Pin OpenClaw for this matrix cell
+      # One install with the pin, because a plain install resolves openclaw to the newest
+      # release, whose preinstall refuses Node 22.
+      - name: Install dependencies with OpenClaw pinned for this matrix cell
         run: npm install --no-save "openclaw@${{ matrix.openclaw-version }}"
 
       - name: Run tests
