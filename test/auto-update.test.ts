@@ -7,6 +7,7 @@ import {
   CHECK_INTERVAL_MS,
   checkAndUpdate,
   compareVersions,
+  defaultStateFile,
   readInstalledVersion,
   resolveHostEntry,
   type UpdateOptions,
@@ -132,6 +133,12 @@ describe("checkAndUpdate", () => {
     expect(opts.spawnUpdate).not.toHaveBeenCalled();
   });
 
+  it("installs a stable correction release such as 2026.8.5-1", async () => {
+    const opts = options({ fetchImpl: registry("2026.8.5-1") });
+    expect(await checkAndUpdate(opts)).toEqual({ kind: "updating", installed: "2026.8.5", latest: "2026.8.5-1" });
+    expect(opts.spawnUpdate).toHaveBeenCalledTimes(1);
+  });
+
   it("treats an unreadable registry version as a failure, not as current", async () => {
     const opts = options({ fetchImpl: registry("latest-ish") });
     expect((await checkAndUpdate(opts)).kind).toBe("failed");
@@ -145,6 +152,37 @@ describe("compareVersions", () => {
     expect(compareVersions("2026.8.5", "2026.8.5")).toBe(0);
     expect(compareVersions("2026.8.6-beta.1", "2026.8.6")).toBe(-1);
     expect(compareVersions("not-a-version", "2026.8.5")).toBeNull();
+  });
+
+  it("sorts OpenClaw stable corrections after their base and by correction number", () => {
+    expect(compareVersions("2026.8.5-1", "2026.8.5")).toBe(1);
+    expect(compareVersions("2026.8.5-10", "2026.8.5-2")).toBe(1);
+    expect(compareVersions("2026.8.5-1", "2026.8.5-beta.3")).toBe(1);
+    expect(compareVersions("2026.8.6", "2026.8.5-3")).toBe(1);
+  });
+
+  it("orders prerelease identifiers by SemVer precedence", () => {
+    expect(compareVersions("2026.8.6-beta.10", "2026.8.6-beta.2")).toBe(1);
+    expect(compareVersions("2026.8.6-alpha.1", "2026.8.6-beta.1")).toBe(-1);
+  });
+});
+
+describe("defaultStateFile", () => {
+  it("expands ~ in OPENCLAW_STATE_DIR against the home", () => {
+    expect(defaultStateFile({ HOME: "/home/u", OPENCLAW_STATE_DIR: "~/oc" })).toBe("/home/u/oc/armorclaw/update-check.json");
+  });
+
+  it("honors OPENCLAW_HOME before HOME", () => {
+    expect(defaultStateFile({ HOME: "/home/u", OPENCLAW_HOME: "/srv/claw" })).toBe(
+      "/srv/claw/.openclaw/armorclaw/update-check.json",
+    );
+    expect(defaultStateFile({ HOME: "/home/u", OPENCLAW_HOME: "~/alt", OPENCLAW_STATE_DIR: "~/state" })).toBe(
+      "/home/u/alt/state/armorclaw/update-check.json",
+    );
+  });
+
+  it("defaults to ~/.openclaw", () => {
+    expect(defaultStateFile({ HOME: "/home/u" })).toBe("/home/u/.openclaw/armorclaw/update-check.json");
   });
 });
 

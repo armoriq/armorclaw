@@ -56,9 +56,37 @@ export function compareVersions(a: string, b: string): number | null {
     if (diff !== 0) return diff < 0 ? -1 : 1;
   }
   if (left.prerelease === right.prerelease) return 0;
-  if (!left.prerelease) return 1;
-  if (!right.prerelease) return -1;
-  return left.prerelease < right.prerelease ? -1 : 1;
+  const leftRank = channelRank(left.prerelease);
+  const rightRank = channelRank(right.prerelease);
+  if (leftRank !== rightRank) return leftRank < rightRank ? -1 : 1;
+  if (leftRank === 2) return Number(left.prerelease) < Number(right.prerelease) ? -1 : 1;
+  return comparePrerelease(left.prerelease.split("."), right.prerelease.split("."));
+}
+
+// OpenClaw versions YYYY.M.P-N are stable corrections that sort after YYYY.M.P
+// (isOpenClawStableCorrectionVersion in OpenClaw's src/infra/npm-registry-spec.ts), not prereleases.
+export function isCorrection(prerelease: string): boolean {
+  return /^[1-9]\d*$/.test(prerelease);
+}
+
+function channelRank(prerelease: string): number {
+  if (prerelease === "") return 1;
+  return isCorrection(prerelease) ? 2 : 0;
+}
+
+// SemVer precedence: numeric identifiers compare as numbers and sort below alphanumeric ones.
+function comparePrerelease(a: string[], b: string[]): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) return Number(x) < Number(y) ? -1 : 1;
+    if (xn !== yn) return xn ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
 function findPackageJson(start: string, name: string): string | null {
@@ -104,8 +132,19 @@ export function resolveHostEntry(argv1: string | undefined): string | null {
   }
 }
 
+function expandHome(input: string, home: string): string {
+  if (input === "~") return home;
+  if (input.startsWith("~/") || input.startsWith("~\\")) return path.join(home, input.slice(2));
+  return path.resolve(input);
+}
+
+// Mirrors OpenClaw's resolveStateDir: OPENCLAW_HOME before HOME, and ~ expanded in either override.
 export function defaultStateFile(env: NodeJS.ProcessEnv): string {
-  const stateDir = env.OPENCLAW_STATE_DIR?.trim() || path.join(env.HOME || os.homedir(), ".openclaw");
+  const osHome = env.HOME?.trim() || os.homedir();
+  const openclawHome = env.OPENCLAW_HOME?.trim();
+  const home = openclawHome ? expandHome(openclawHome, osHome) : osHome;
+  const override = env.OPENCLAW_STATE_DIR?.trim();
+  const stateDir = override ? expandHome(override, home) : path.join(home, ".openclaw");
   return path.join(stateDir, "armorclaw", "update-check.json");
 }
 
@@ -182,7 +221,8 @@ export async function checkAndUpdate(opts: UpdateOptions = {}): Promise<UpdateOu
     if (order === null) return { kind: "failed", reason: `unreadable version ${latest} or ${installed}` };
     if (order <= 0) return { kind: "current", installed, latest };
     // `plugins update` refuses a prerelease reached through latest, so asking it would only fail daily.
-    if (parseVersion(latest)?.prerelease) return { kind: "prerelease", installed, latest };
+    const pre = parseVersion(latest)?.prerelease;
+    if (pre && !isCorrection(pre)) return { kind: "prerelease", installed, latest };
 
     (opts.spawnUpdate ?? defaultSpawn)(opts.execPath ?? process.execPath, [hostEntry, "plugins", "update", PLUGIN_ID], env);
     log(opts.logger, "info", `armoriq: ArmorClaw ${latest} is available (running ${installed}); installing it, it loads at the next gateway start`);
