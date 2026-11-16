@@ -11,6 +11,7 @@ import path from "node:path";
 import { CryptoPolicyService, computePolicyDigest } from "./src/crypto-policy.service.js";
 import { IAPVerificationService, type CsrgProofHeaders } from "./src/iap-verfication.service.js";
 import { createObservability } from "./src/observability.js";
+import { startAutoUpdate } from "./src/auto-update.js";
 import {
   PolicyStore,
   PolicyUpdateSchema,
@@ -2190,6 +2191,8 @@ export default function register(api: OpenClawPluginApi) {
     api.logger.info("armoriq: plugin disabled (set plugins.entries.armoriq.enabled=true)");
     return;
   }
+
+  startAutoUpdate({ logger: api.logger });
 
   const cryptoPolicyService = cfg.cryptoPolicyEnabled
     ? new CryptoPolicyService({
